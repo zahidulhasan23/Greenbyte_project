@@ -6,14 +6,36 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    function isAdmin() {
-      return request.auth != null && 
-             request.auth.token.email == 'zahidul@greenbyteai.com' && 
-             request.auth.token.email_verified == true;
-    }
-
+    // --- Helpers ---
     function isSignedIn() {
       return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function getRole() {
+      return get(/databases/$(database)/documents/members/$(request.auth.uid)).data.role;
+    }
+
+    function isGlobalAdmin() {
+      return isSignedIn() && (
+        request.auth.token.email == 'zahidul@greenbyteai.com' ||
+        getRole() == 'Global Admin'
+      );
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (isGlobalAdmin() || getRole() == 'Admin');
+    }
+
+    function isManager() {
+      return isSignedIn() && (isAdmin() || getRole() == 'Manager');
+    }
+
+    function isWorker() {
+      return isSignedIn() && getRole() == 'Worker';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
     }
 
     function incoming() {
@@ -24,32 +46,90 @@ service cloud.firestore {
       return resource.data;
     }
 
-    // Projects
+    // --- Validation Blueprints ---
+    function isValidProject(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 200 &&
+             data.ownerId is string && data.ownerId.size() <= 128 &&
+             data.members is list && data.members.size() <= 100 &&
+             data.createdAt == request.time &&
+             data.archived is bool;
+    }
+
+    function isValidTask(data) {
+      return data.projectId is string && isValidId(data.projectId) &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+             data.status in ['New', 'In Progress', 'Completed'] &&
+             data.createdAt == request.time &&
+             data.archived is bool;
+    }
+
+    function isValidJob(data) {
+      return data.taskId is string && isValidId(data.taskId) &&
+             data.projectId is string && isValidId(data.projectId) &&
+             data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
+             (data.addingDate is timestamp || data.addingDate == null) &&
+             (data.finishingDate is timestamp || data.finishingDate == null) &&
+             data.status in ['New', 'In Progress', 'Completed'] &&
+             data.assignedTo is list && data.assignedTo.size() <= 10 &&
+             data.createdAt == request.time;
+    }
+
+    function isValidMember(data) {
+      return data.name is string && data.name.size() > 0 && data.name.size() <= 100 &&
+             data.email is string && data.email.size() <= 200 &&
+             data.role in ['Global Admin', 'Admin', 'Manager', 'Worker'] &&
+             data.createdAt == request.time;
+    }
+
+    // --- Collection Matches ---
+
     match /projects/{projectId} {
-      allow read: if isSignedIn() || isAdmin();
-      allow create, update: if isSignedIn() || isAdmin();
-      allow delete: if isAdmin();
+      allow list, get: if isManager() || (isWorker() && existing().members.contains(request.auth.token.email));
+      allow create: if isAdmin() && isValidProject(incoming());
+      allow update: if isAdmin() && isValidProject(incoming()) && (
+        // Action: Full Edit
+        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'members', 'archived'])
+      );
+      allow delete: if isGlobalAdmin();
     }
 
-    // Tasks
     match /tasks/{taskId} {
-      allow read: if isSignedIn() || isAdmin();
-      allow create, update: if isSignedIn() || isAdmin();
+      function canSeeTask() {
+        let project = get(/databases/$(database)/documents/projects/$(existing().projectId));
+        return isManager() || (isWorker() && project.data.members.contains(request.auth.token.email));
+      }
+      
+      allow list, get: if canSeeTask();
+      allow create: if isAdmin() && isValidTask(incoming()) && exists(/databases/$(database)/documents/projects/$(incoming().projectId));
+      allow update: if (isAdmin() || (isManager() && incoming().diff(existing()).affectedKeys().hasOnly(['status']))) && 
+                    isValidTask(incoming());
       allow delete: if isAdmin();
     }
 
-    // Jobs
     match /jobs/{jobId} {
-      allow read: if isSignedIn() || isAdmin();
-      allow create, update: if isSignedIn() || isAdmin();
+      allow list, get: if isManager() || (isWorker() && existing().assignedTo.contains(request.auth.token.email));
+      allow create: if isAdmin() && isValidJob(incoming()) && 
+                    exists(/databases/$(database)/documents/tasks/$(incoming().taskId));
+      allow update: if (
+        (isAdmin() && isValidJob(incoming())) ||
+        (isManager() && incoming().diff(existing()).affectedKeys().hasOnly(['assignedTo', 'status']) && isValidJob(incoming())) ||
+        (isWorker() && existing().assignedTo.contains(request.auth.token.email) && 
+         incoming().diff(existing()).affectedKeys().hasOnly(['status']) && isValidJob(incoming()))
+      );
       allow delete: if isAdmin();
     }
 
-    // Members
     match /members/{memberId} {
-      allow read: if isSignedIn() || isAdmin();
-      allow create, update: if isSignedIn() || isAdmin();
-      allow delete: if isAdmin();
+      allow list: if isManager();
+      allow get: if isManager() || (isSignedIn() && memberId == request.auth.uid);
+      allow create: if isAdmin() && isValidMember(incoming());
+      allow update: if isAdmin() && isValidMember(incoming()) && (
+        // Action: Role/Name update
+        (isGlobalAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role'])) ||
+        (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role']) && 
+         existing().role != 'Global Admin' && incoming().role != 'Global Admin')
+      );
+      allow delete: if isGlobalAdmin() && existing().email != 'zahidul@greenbyteai.com';
     }
   }
 }

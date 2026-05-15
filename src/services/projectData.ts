@@ -25,17 +25,17 @@ export function useCurrentUserRole() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!auth.currentUser?.email) {
+    if (!auth.currentUser) {
       setRole(null);
       setLoading(false);
       return;
     }
 
-    const q = query(collection(db, 'members'), where('email', '==', auth.currentUser.email));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      if (!snapshot.empty) {
-        setRole(snapshot.docs[0].data().role as UserRole);
+    const unsub = onSnapshot(doc(db, 'members', auth.currentUser.uid), (docSnap) => {
+      if (docSnap.exists()) {
+        setRole(docSnap.data().role as UserRole);
       } else {
+        // Fallback for global admin if doc not yet created
         if (auth.currentUser?.email === 'zahidul@greenbyteai.com') {
           setRole('Global Admin');
         } else {
@@ -48,7 +48,7 @@ export function useCurrentUserRole() {
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    return () => unsub();
   }, []);
 
   return { role, loading };
@@ -408,23 +408,16 @@ export function useMemberActivity(email: string | null) {
 }
 
 export async function syncGlobalAdmin() {
+  if (!auth.currentUser || auth.currentUser.email !== 'zahidul@greenbyteai.com') return;
+
   try {
-    const q = query(collection(db, 'members'), where('email', '==', 'zahidul@greenbyteai.com'));
-    const snapshot = await getDocs(q);
-    
-    if (snapshot.empty) {
-      await addDoc(collection(db, 'members'), {
-        name: 'Zahidul Hasan',
-        email: 'zahidul@greenbyteai.com',
-        role: 'Global Admin',
-        createdAt: serverTimestamp()
-      });
-    } else {
-      const adminDoc = snapshot.docs[0];
-      if (adminDoc.data().role !== 'Global Admin') {
-        await updateDoc(doc(db, 'members', adminDoc.id), { role: 'Global Admin' });
-      }
-    }
+    const adminRef = doc(db, 'members', auth.currentUser.uid);
+    await setDoc(adminRef, {
+      name: auth.currentUser.displayName || 'Zahidul Hasan',
+      email: auth.currentUser.email,
+      role: 'Global Admin',
+      createdAt: serverTimestamp()
+    }, { merge: true });
   } catch (err) {
     console.error("Failed to sync global admin:", err);
   }
@@ -451,6 +444,7 @@ export function useMembers() {
 export async function addMember(member: Omit<Member, 'id' | 'createdAt'> & { password?: string }) {
   try {
     const { password, ...memberData } = member;
+    let uid = '';
     
     // 1. Create Auth User if password provided
     if (password) {
@@ -459,6 +453,7 @@ export async function addMember(member: Omit<Member, 'id' | 'createdAt'> & { pas
       
       try {
         const userCredential = await createUserWithEmailAndPassword(secondaryAuth, member.email, password);
+        uid = userCredential.user.uid;
         await updateProfile(userCredential.user, { displayName: member.name });
         await signOut(secondaryAuth);
       } finally {
@@ -471,10 +466,18 @@ export async function addMember(member: Omit<Member, 'id' | 'createdAt'> & { pas
     if (memberData.email === 'zahidul@greenbyteai.com') {
       finalMember.role = 'Global Admin';
     }
-    await addDoc(collection(db, 'members'), {
-      ...finalMember,
-      createdAt: serverTimestamp()
-    });
+
+    if (uid) {
+      await setDoc(doc(db, 'members', uid), {
+        ...finalMember,
+        createdAt: serverTimestamp()
+      });
+    } else {
+      await addDoc(collection(db, 'members'), {
+        ...finalMember,
+        createdAt: serverTimestamp()
+      });
+    }
   } catch (err) {
     handleFirestoreError(err, OperationType.CREATE, 'members');
   }

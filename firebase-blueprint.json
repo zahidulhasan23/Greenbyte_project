@@ -49,10 +49,10 @@
       "properties": {
         "name": { "type": "string", "description": "Full name of the member" },
         "email": { "type": "string", "format": "email", "description": "Email address of the member" },
-        "role": { "type": "string", "description": "Professional role or title" },
+        "role": { "type": "string", "enum": ["Global Admin", "Admin", "Manager", "Worker"], "description": "System role of the member" },
         "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation" }
       },
-      "required": ["name", "email", "createdAt"]
+      "required": ["name", "email", "role", "createdAt"]
     }
   },
   "firestore": {
