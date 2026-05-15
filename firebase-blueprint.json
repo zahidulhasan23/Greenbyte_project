@@ -9,7 +9,8 @@
         "ownerId": { "type": "string", "description": "UID of the user who created the project" },
         "members": { "type": "array", "items": { "type": "string" }, "description": "List of user UIDs or emails who have access to this project" },
         "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation" },
-        "archived": { "type": "boolean", "description": "Whether the project is archived" }
+        "archived": { "type": "boolean", "description": "Whether the project is archived" },
+        "archivedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of when it was archived" }
       },
       "required": ["name", "ownerId", "members", "createdAt"]
     },
@@ -22,7 +23,8 @@
         "title": { "type": "string", "description": "Title of the task" },
         "status": { "type": "string", "enum": ["New", "In Progress", "Completed"], "description": "Current status of the task" },
         "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation" },
-        "archived": { "type": "boolean", "description": "Whether the task is archived" }
+        "archived": { "type": "boolean", "description": "Whether the task is archived" },
+        "archivedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of when it was archived" }
       },
       "required": ["projectId", "title", "status", "createdAt"]
     },
@@ -38,7 +40,9 @@
         "finishingDate": { "type": "string", "format": "date-time", "description": "End date of the job" },
         "status": { "type": "string", "enum": ["New", "In Progress", "Completed"], "description": "Current status of the job" },
         "assignedTo": { "type": "array", "items": { "type": "string" }, "description": "List of team member names or IDs assigned to this job" },
-        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation" }
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation" },
+        "archived": { "type": "boolean", "description": "Whether the job is archived" },
+        "archivedAt": { "type": "string", "format": "date-time", "description": "Server timestamp of when it was archived" }
       },
       "required": ["taskId", "projectId", "title", "addingDate", "status", "createdAt"]
     },

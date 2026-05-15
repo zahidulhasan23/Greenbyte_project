@@ -67,6 +67,7 @@ export function useProjects() {
     if (role === 'Global Admin' || role === 'Admin' || role === 'Manager') {
       q = query(
         collection(db, 'projects'),
+        where('archived', '==', false),
         orderBy('createdAt', 'desc')
       );
     } else {
@@ -74,6 +75,7 @@ export function useProjects() {
       q = query(
         collection(db, 'projects'),
         where('members', 'array-contains', auth.currentUser?.email),
+        where('archived', '==', false),
         orderBy('createdAt', 'desc')
       );
     }
@@ -111,6 +113,7 @@ export function useProjectHierarchy(projectId: string | null) {
     const tasksQ = query(
       collection(db, 'tasks'),
       where('projectId', '==', projectId),
+      where('archived', '==', false),
       orderBy('createdAt', 'asc')
     );
 
@@ -119,6 +122,7 @@ export function useProjectHierarchy(projectId: string | null) {
       jobsQ = query(
         collection(db, 'jobs'),
         where('projectId', '==', projectId),
+        where('archived', '==', false),
         orderBy('createdAt', 'asc')
       );
     } else {
@@ -127,6 +131,7 @@ export function useProjectHierarchy(projectId: string | null) {
         collection(db, 'jobs'),
         where('projectId', '==', projectId),
         where('assignedTo', 'array-contains', auth.currentUser?.email),
+        where('archived', '==', false),
         orderBy('createdAt', 'asc')
       );
     }
@@ -184,16 +189,17 @@ export function useGlobalStats() {
     let projectJobCounts: Record<string, { total: number, completed: number }> = {};
 
     activeProjectsList.forEach(project => {
-      const tasksQ = query(collection(db, 'tasks'), where('projectId', '==', project.id));
+      const tasksQ = query(collection(db, 'tasks'), where('projectId', '==', project.id), where('archived', '==', false));
       
       let jobsQ;
       if (role === 'Global Admin' || role === 'Admin' || role === 'Manager') {
-        jobsQ = query(collection(db, 'jobs'), where('projectId', '==', project.id));
+        jobsQ = query(collection(db, 'jobs'), where('projectId', '==', project.id), where('archived', '==', false));
       } else {
         jobsQ = query(
           collection(db, 'jobs'), 
           where('projectId', '==', project.id),
-          where('assignedTo', 'array-contains', auth.currentUser?.email)
+          where('assignedTo', 'array-contains', auth.currentUser?.email),
+          where('archived', '==', false)
         );
       }
 
@@ -256,6 +262,7 @@ export function useRecentActivity() {
     const q = query(
       collection(db, 'jobs'),
       where('projectId', 'in', activeProjects.map(p => p.id).slice(0, 10)), // Firestore 'in' limit is 10
+      where('archived', '==', false),
       orderBy('createdAt', 'desc'),
       limit(5)
     );
@@ -305,9 +312,31 @@ export async function updateProject(id: string, data: Partial<Project>) {
 
 export async function deleteProject(id: string) {
   try {
+    await updateDoc(doc(db, 'projects', id), {
+      archived: true,
+      archivedAt: serverTimestamp()
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `projects/${id}`);
+  }
+}
+
+export async function permanentlyDeleteProject(id: string) {
+  try {
     await deleteDoc(doc(db, 'projects', id));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `projects/${id}`);
+  }
+}
+
+export async function restoreProject(id: string) {
+  try {
+    await updateDoc(doc(db, 'projects', id), {
+      archived: false,
+      archivedAt: null
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `projects/${id}`);
   }
 }
 
@@ -335,17 +364,40 @@ export async function updateTask(id: string, data: Partial<Task>) {
 
 export async function deleteTask(id: string) {
   try {
+    await updateDoc(doc(db, 'tasks', id), {
+      archived: true,
+      archivedAt: serverTimestamp()
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `tasks/${id}`);
+  }
+}
+
+export async function permanentlyDeleteTask(id: string) {
+  try {
     await deleteDoc(doc(db, 'tasks', id));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `tasks/${id}`);
   }
 }
 
-export async function addJob(job: Omit<Job, 'id' | 'createdAt'>) {
+export async function restoreTask(id: string) {
+  try {
+    await updateDoc(doc(db, 'tasks', id), {
+      archived: false,
+      archivedAt: null
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `tasks/${id}`);
+  }
+}
+
+export async function addJob(job: Omit<Job, 'id' | 'createdAt' | 'archived'>) {
   try {
     await addDoc(collection(db, 'jobs'), {
       ...job,
-      createdAt: serverTimestamp()
+      createdAt: serverTimestamp(),
+      archived: false
     });
   } catch (err) {
     handleFirestoreError(err, OperationType.CREATE, 'jobs');
@@ -362,9 +414,31 @@ export async function updateJob(id: string, data: Partial<Job>) {
 
 export async function deleteJob(id: string) {
   try {
+    await updateDoc(doc(db, 'jobs', id), {
+      archived: true,
+      archivedAt: serverTimestamp()
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `jobs/${id}`);
+  }
+}
+
+export async function permanentlyDeleteJob(id: string) {
+  try {
     await deleteDoc(doc(db, 'jobs', id));
   } catch (err) {
     handleFirestoreError(err, OperationType.DELETE, `jobs/${id}`);
+  }
+}
+
+export async function restoreJob(id: string) {
+  try {
+    await updateDoc(doc(db, 'jobs', id), {
+      archived: false,
+      archivedAt: null
+    });
+  } catch (err) {
+    handleFirestoreError(err, OperationType.UPDATE, `jobs/${id}`);
   }
 }
 
@@ -430,6 +504,63 @@ export async function syncGlobalAdmin() {
   }
 }
 
+export function useTrashedItems() {
+  const [items, setItems] = useState<{ id: string, type: 'project' | 'task' | 'job', title: string, archivedAt: any }[]>([]);
+  const [loading, setLoading] = useState(true);
+  const { role } = useCurrentUserRole();
+
+  useEffect(() => {
+    if (role === null) return;
+
+    if (role !== 'Global Admin' && role !== 'Admin' && role !== 'Manager') {
+      setItems([]);
+      setLoading(false);
+      return;
+    }
+
+    const unsubscribes: (() => void)[] = [];
+
+    const projectsQ = query(collection(db, 'projects'), where('archived', '==', true));
+    const tasksQ = query(collection(db, 'tasks'), where('archived', '==', true));
+    const jobsQ = query(collection(db, 'jobs'), where('archived', '==', true));
+
+    let projects: any[] = [];
+    let tasks: any[] = [];
+    let jobs: any[] = [];
+
+    const unsubProjects = onSnapshot(projectsQ, (snap) => {
+      projects = snap.docs.map(doc => ({ id: doc.id, type: 'project', title: doc.data().name, archivedAt: doc.data().archivedAt }));
+      updateItems();
+    });
+
+    const unsubTasks = onSnapshot(tasksQ, (snap) => {
+      tasks = snap.docs.map(doc => ({ id: doc.id, type: 'task', title: doc.data().title, archivedAt: doc.data().archivedAt }));
+      updateItems();
+    });
+
+    const unsubJobs = onSnapshot(jobsQ, (snap) => {
+      jobs = snap.docs.map(doc => ({ id: doc.id, type: 'job', title: doc.data().title, archivedAt: doc.data().archivedAt }));
+      updateItems();
+    });
+
+    unsubscribes.push(unsubProjects, unsubTasks, unsubJobs);
+
+    function updateItems() {
+      const all = [...projects, ...tasks, ...jobs].sort((a, b) => {
+        const timeA = a.archivedAt?.toMillis() || 0;
+        const timeB = b.archivedAt?.toMillis() || 0;
+        return timeB - timeA;
+      });
+      setItems(all);
+      setLoading(false);
+    }
+
+    return () => unsubscribes.forEach(u => u());
+  }, [role]);
+
+  return { items, loading };
+}
+
 export function useMembers() {
   const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
@@ -437,7 +568,18 @@ export function useMembers() {
   useEffect(() => {
     const q = query(collection(db, 'members'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
-      setMembers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Member)));
+      const allMembers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Member));
+      // Deduplicate by email
+      const uniqueMembers = allMembers.reduce((acc, current) => {
+        const x = acc.find(item => item.email === current.email);
+        if (!x) {
+          return acc.concat([current]);
+        } else {
+          return acc;
+        }
+      }, [] as Member[]);
+      
+      setMembers(uniqueMembers);
       setLoading(false);
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, 'members');

@@ -8,7 +8,8 @@ export interface Project {
   ownerId: string;
   members: string[];
   createdAt: Timestamp;
-  archived?: boolean;
+  archived: boolean;
+  archivedAt?: Timestamp;
 }
 
 export interface Task {
@@ -17,7 +18,8 @@ export interface Task {
   title: string;
   status: Status;
   createdAt: Timestamp;
-  archived?: boolean;
+  archived: boolean;
+  archivedAt?: Timestamp;
 }
 
 export interface Job {
@@ -30,6 +32,8 @@ export interface Job {
   status: Status;
   assignedTo: string[];
   createdAt: Timestamp;
+  archived: boolean;
+  archivedAt?: Timestamp;
 }
 
 export type UserRole = 'Global Admin' | 'Admin' | 'Manager' | 'Worker';

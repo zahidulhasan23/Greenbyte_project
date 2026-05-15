@@ -10,7 +10,8 @@ import {
   ChevronRight,
   Menu,
   X,
-  LogOut
+  LogOut,
+  Trash2
 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 import { useGlobalStats, useCurrentUserRole } from '../../services/projectData';
@@ -107,6 +108,14 @@ export const DashboardLayout = ({
               label="Team Members" 
               active={activeTab === 'team'} 
               onClick={() => { setActiveTab('team'); setIsSidebarOpen(false); }}
+            />
+          )}
+          {(role === 'Global Admin' || role === 'Admin' || role === 'Manager') && (
+            <SidebarItem 
+              icon={Trash2} 
+              label="Trash Bin" 
+              active={activeTab === 'trash'} 
+              onClick={() => { setActiveTab('trash'); setIsSidebarOpen(false); }}
             />
           )}
           <div className="border-t border-border-color my-4 pt-4">

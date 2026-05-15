@@ -13,6 +13,7 @@ import Tasks from './components/tasks/Tasks';
 import Team from './components/team/Team';
 import Profile from './components/profile/Profile';
 import Settings from './components/settings/Settings';
+import Trash from './components/trash/Trash';
 import { NavigationProvider } from './context/NavigationContext';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth } from './services/firebase';
@@ -196,6 +197,7 @@ export default function App() {
             )}
             {activeTab === 'profile' && <Profile />}
             {activeTab === 'settings' && <Settings />}
+            {activeTab === 'trash' && <Trash />}
           </motion.div>
         </AnimatePresence>
       </DashboardLayout>
