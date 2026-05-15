@@ -36,7 +36,8 @@ export function useCurrentUserRole() {
         setRole(docSnap.data().role as UserRole);
       } else {
         // Fallback for global admin if doc not yet created
-        if (auth.currentUser?.email === 'zahidul@greenbyteai.com') {
+        const adminEmails = ['zahidul@greenbyteai.com', 'zahidulhasan23@gmail.com'];
+        if (adminEmails.includes(auth.currentUser?.email || '')) {
           setRole('Global Admin');
         } else {
           setRole('Worker');
@@ -408,7 +409,8 @@ export function useMemberActivity(email: string | null) {
 }
 
 export async function syncGlobalAdmin() {
-  if (!auth.currentUser || auth.currentUser.email !== 'zahidul@greenbyteai.com') return;
+  const adminEmails = ['zahidul@greenbyteai.com', 'zahidulhasan23@gmail.com'];
+  if (!auth.currentUser || !adminEmails.includes(auth.currentUser.email || '')) return;
 
   try {
     const adminRef = doc(db, 'members', auth.currentUser.uid);
@@ -463,7 +465,8 @@ export async function addMember(member: Omit<Member, 'id' | 'createdAt'> & { pas
 
     // 2. Add to Firestore
     const finalMember = { ...memberData };
-    if (memberData.email === 'zahidul@greenbyteai.com') {
+    const adminEmails = ['zahidul@greenbyteai.com', 'zahidulhasan23@gmail.com'];
+    if (adminEmails.includes(memberData.email)) {
       finalMember.role = 'Global Admin';
     }
 
@@ -486,7 +489,8 @@ export async function addMember(member: Omit<Member, 'id' | 'createdAt'> & { pas
 export async function updateMember(id: string, data: Partial<Member>) {
   try {
     const finalData = { ...data };
-    if (data.email === 'zahidul@greenbyteai.com') {
+    const adminEmails = ['zahidul@greenbyteai.com', 'zahidulhasan23@gmail.com'];
+    if (adminEmails.includes(data.email || '')) {
       finalData.role = 'Global Admin';
     }
     await updateDoc(doc(db, 'members', id), finalData);

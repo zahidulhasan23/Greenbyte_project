@@ -28,12 +28,13 @@ export const NeonButton = ({
   variant = 'cyan', 
   children, 
   ...props 
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'cyan' | 'purple' | 'green' | 'white' }) => {
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: 'cyan' | 'purple' | 'green' | 'white' | 'danger' }) => {
   const variants = {
     cyan: "bg-cyan-500 text-black border-cyan-400 hover:bg-cyan-400 shadow-[0_0_20px_rgba(6,182,212,0.3)]",
     purple: "bg-purple-500 text-black border-purple-400 hover:bg-purple-400 shadow-[0_0_20px_rgba(168,85,247,0.3)]",
     green: "bg-emerald-500 text-black border-emerald-400 hover:bg-emerald-400 shadow-[0_0_20px_rgba(16,185,129,0.3)]",
     white: "bg-white/10 text-white border-white/20 hover:bg-white/20",
+    danger: "bg-red-500 text-white border-red-400 hover:bg-red-400 shadow-[0_0_20px_rgba(239,68,68,0.3)]",
   };
 
   return (

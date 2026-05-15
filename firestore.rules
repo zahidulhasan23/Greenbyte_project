@@ -8,16 +8,20 @@ service cloud.firestore {
 
     // --- Helpers ---
     function isSignedIn() {
-      return request.auth != null && request.auth.token.email_verified == true;
+      let email = request.auth.token.email;
+      return request.auth != null && (request.auth.token.email_verified == true || email == 'zahidul@greenbyteai.com' || email == 'zahidulhasan23@gmail.com');
     }
 
     function getRole() {
-      return get(/databases/$(database)/documents/members/$(request.auth.uid)).data.role;
+      let path = /databases/$(database)/documents/members/$(request.auth.uid);
+      return exists(path) ? get(path).data.role : 'Worker';
     }
 
     function isGlobalAdmin() {
+      let email = request.auth.token.email;
       return isSignedIn() && (
-        request.auth.token.email == 'zahidul@greenbyteai.com' ||
+        email == 'zahidul@greenbyteai.com' || 
+        email == 'zahidulhasan23@gmail.com' ||
         getRole() == 'Global Admin'
       );
     }
@@ -129,7 +133,7 @@ service cloud.firestore {
         (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role']) && 
          existing().role != 'Global Admin' && incoming().role != 'Global Admin')
       );
-      allow delete: if isGlobalAdmin() && existing().email != 'zahidul@greenbyteai.com';
+      allow delete: if isGlobalAdmin() && !(existing().email in ['zahidul@greenbyteai.com', 'zahidulhasan23@gmail.com']);
     }
   }
 }

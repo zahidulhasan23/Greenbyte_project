@@ -1,0 +1,6 @@
+runtime: nodejs
+runConfig:
+  memoryMiB: 512
+  cpu: 1
+  minInstances: 0
+  maxInstances: 10
