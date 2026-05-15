@@ -103,11 +103,10 @@ export default function Overview() {
             </div>
           </div>
           
-          <div className="flex-1 w-full relative h-[300px]">
+          <div className="flex-1 w-full min-h-[300px]">
             {isMounted && (
-              <div className="absolute inset-0">
-                <ResponsiveContainer width="100%" height="100%" minWidth={0} minHeight={0}>
-                  <AreaChart data={MOCK_HISTORICAL_DATA}>
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={MOCK_HISTORICAL_DATA}>
                     <defs>
                       <linearGradient id="colorLoad" x1="0" y1="0" x2="0" y2="1">
                         <stop offset="5%" stopColor="#06b6d4" stopOpacity={0.3}/>
@@ -158,9 +157,8 @@ export default function Overview() {
                     />
                   </AreaChart>
                 </ResponsiveContainer>
-              </div>
-            )}
-          </div>
+              )}
+            </div>
         </GlassCard>
 
         <GlassCard className="min-h-[400px] p-4 md:p-8 bg-white/[0.02]">

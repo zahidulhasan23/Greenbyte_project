@@ -12,7 +12,8 @@ import {
   deleteDoc,
   setDoc,
   limit,
-  getDocs
+  getDocs,
+  getDoc
 } from 'firebase/firestore';
 import { initializeApp, deleteApp } from 'firebase/app';
 import { getAuth, createUserWithEmailAndPassword, updateProfile, signOut } from 'firebase/auth';
@@ -488,9 +489,14 @@ export async function syncGlobalAdmin() {
 
   try {
     const adminRef = doc(db, 'members', auth.currentUser.uid);
-    const docSnap = await getDocs(query(collection(db, 'members'), where('email', '==', auth.currentUser.email), limit(1)));
+    // Check if any of the admin emails already exist to avoid duplicates for the same persona
+    const q = query(collection(db, 'members'), where('email', 'in', adminEmails));
+    const docSnap = await getDocs(q);
     
-    if (docSnap.empty) {
+    // Also check if this specific UID already exists to handle account updates
+    const uidSnap = await getDoc(adminRef);
+    
+    if (docSnap.empty && !uidSnap.exists()) {
       await setDoc(adminRef, {
         name: auth.currentUser.displayName || 'Zahidul Hasan',
         email: auth.currentUser.email,
@@ -569,9 +575,9 @@ export function useMembers() {
     const q = query(collection(db, 'members'), orderBy('createdAt', 'desc'));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const allMembers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Member));
-      // Deduplicate by email
+      // Deduplicate by email (case-insensitive)
       const uniqueMembers = allMembers.reduce((acc, current) => {
-        const x = acc.find(item => item.email === current.email);
+        const x = acc.find(item => item.email?.toLowerCase() === current.email?.toLowerCase());
         if (!x) {
           return acc.concat([current]);
         } else {
