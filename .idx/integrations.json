@@ -1,0 +1,10 @@
+{
+  "firebase_hosting": {
+    "deploymentHostingUrl": "https://gen-lang-client-0672635143.web.app"
+  },
+  "cloud_run_deploy": {
+    "region": "us-central1",
+    "sourceFlag": "--source .",
+    "allowUnauthenticatedInvocationsFlag": "--allow-unauthenticated"
+  }
+}
