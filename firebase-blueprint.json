@@ -1,0 +1,76 @@
+{
+  "entities": {
+    "Project": {
+      "title": "Project",
+      "description": "A high-level project container",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Unique name of the project" },
+        "ownerId": { "type": "string", "description": "UID of the user who created the project" },
+        "members": { "type": "array", "items": { "type": "string" }, "description": "List of user UIDs or emails who have access to this project" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation" },
+        "archived": { "type": "boolean", "description": "Whether the project is archived" }
+      },
+      "required": ["name", "ownerId", "members", "createdAt"]
+    },
+    "Task": {
+      "title": "Task",
+      "description": "A specific task within a project",
+      "type": "object",
+      "properties": {
+        "projectId": { "type": "string", "description": "Reference to parent project" },
+        "title": { "type": "string", "description": "Title of the task" },
+        "status": { "type": "string", "enum": ["New", "In Progress", "Completed"], "description": "Current status of the task" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation" },
+        "archived": { "type": "boolean", "description": "Whether the task is archived" }
+      },
+      "required": ["projectId", "title", "status", "createdAt"]
+    },
+    "Job": {
+      "title": "Job",
+      "description": "A sub-unit of work within a task",
+      "type": "object",
+      "properties": {
+        "taskId": { "type": "string", "description": "Reference to parent task" },
+        "projectId": { "type": "string", "description": "Reference to grandparent project" },
+        "title": { "type": "string", "description": "Title of the job" },
+        "addingDate": { "type": "string", "format": "date-time", "description": "Start date of the job" },
+        "finishingDate": { "type": "string", "format": "date-time", "description": "End date of the job" },
+        "status": { "type": "string", "enum": ["New", "In Progress", "Completed"], "description": "Current status of the job" },
+        "assignedTo": { "type": "array", "items": { "type": "string" }, "description": "List of team member names or IDs assigned to this job" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation" }
+      },
+      "required": ["taskId", "projectId", "title", "addingDate", "status", "createdAt"]
+    },
+    "Member": {
+      "title": "Member",
+      "description": "A team member in the organization",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Full name of the member" },
+        "email": { "type": "string", "format": "email", "description": "Email address of the member" },
+        "role": { "type": "string", "description": "Professional role or title" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Server timestamp of creation" }
+      },
+      "required": ["name", "email", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Root collection for projects"
+    },
+    "/tasks/{taskId}": {
+      "schema": "Task",
+      "description": "Collection for tasks"
+    },
+    "/jobs/{jobId}": {
+      "schema": "Job",
+      "description": "Collection for jobs"
+    },
+    "/members/{memberId}": {
+      "schema": "Member",
+      "description": "Collection for team members"
+    }
+  }
+}

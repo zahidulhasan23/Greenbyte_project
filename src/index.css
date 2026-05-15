@@ -1,0 +1,34 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: var(--background);
+  --color-panel: var(--panel);
+  --color-foreground: var(--foreground);
+  --color-border-color: var(--border-color);
+  --color-card-bg: var(--card-bg);
+  --background-main-gradient: var(--main-gradient);
+}
+
+:root {
+  --background: #050505;
+  --panel: #0a0a0a;
+  --foreground: #ffffff;
+  --border-color: rgba(255, 255, 255, 0.1);
+  --card-bg: rgba(255, 255, 255, 0.05);
+  --main-gradient: radial-gradient(circle at top right, #1a1a1a, #050505);
+}
+
+.light-mode {
+  --background: #fdfdfd;
+  --panel: #ffffff;
+  --foreground: #0f172a;
+  --border-color: rgba(15, 23, 42, 0.08);
+  --card-bg: rgba(255, 255, 255, 0.7);
+  --main-gradient: radial-gradient(circle at top right, #f8fafc, #fdfdfd);
+}
+
+@layer base {
+  body {
+    @apply bg-background text-foreground transition-colors duration-300;
+  }
+}

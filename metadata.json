@@ -1,0 +1,8 @@
+{
+  "name": "GreenByte Projects",
+  "description": "A futuristic project management dashboard with glassmorphism and neon accents for tracking projects, tasks, and jobs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
