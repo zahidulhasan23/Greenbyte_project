@@ -37,8 +37,9 @@ export function useCurrentUserRole() {
         setRole(docSnap.data().role as UserRole);
       } else {
         // Fallback for global admin if doc not yet created
-        const adminEmails = ['zahidul@greenbyteai.com', 'zahidulhasan23@gmail.com'];
-        if (adminEmails.includes(auth.currentUser?.email || '')) {
+        const adminEmails = ['zahidul@greenbyteai.com'];
+        const userEmail = auth.currentUser?.email?.toLowerCase() || '';
+        if (adminEmails.some(e => e.toLowerCase() === userEmail)) {
           setRole('Global Admin');
         } else {
           setRole('Worker');
@@ -47,6 +48,14 @@ export function useCurrentUserRole() {
       setLoading(false);
     }, (error) => {
       console.error("Role hook error:", error);
+      // Fallback role on error
+      const adminEmails = ['zahidul@greenbyteai.com'];
+      const userEmail = auth.currentUser?.email?.toLowerCase() || '';
+      if (adminEmails.some(e => e.toLowerCase() === userEmail)) {
+        setRole('Global Admin');
+      } else {
+        setRole('Worker');
+      }
       setLoading(false);
     });
 
@@ -85,8 +94,25 @@ export function useProjects() {
         }
       } catch (err) {
         console.error("API Fetch Error, falling back to client SDK:", err);
-        // Fallback to client SDK if API fails, which might still work if rules have been patched
-        setLoading(false);
+        
+        // Fallback to client SDK
+        const q = query(
+          collection(db, 'projects'),
+          where('archived', '==', false),
+          orderBy('createdAt', 'desc')
+        );
+
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+          if (isSubscribed) {
+            setProjects(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Project)));
+            setLoading(false);
+          }
+        }, (clientErr) => {
+          console.error("Client SDK fallback error:", clientErr);
+          if (isSubscribed) setLoading(false);
+        });
+        
+        return () => unsubscribe();
       }
     }
 
@@ -137,9 +163,51 @@ export function useProjectHierarchy(projectId: string | null) {
             setTasks(tasksData);
             setJobs(jobsData);
           }
+        } else {
+          throw new Error('API failed');
         }
       } catch (err) {
-        console.error("Hierarchy API Error:", err);
+        console.error("Hierarchy API Error, falling back to client SDK:", err);
+        
+        // Fallback to client SDK
+        const tasksQ = query(
+          collection(db, 'tasks'),
+          where('projectId', '==', projectId),
+          where('archived', '==', false),
+          orderBy('createdAt', 'asc')
+        );
+        
+        let jobsQ;
+        const userEmail = auth.currentUser?.email?.toLowerCase();
+        if (['Global Admin', 'Admin', 'Manager'].includes(role || '')) {
+          jobsQ = query(
+            collection(db, 'jobs'),
+            where('projectId', '==', projectId),
+            where('archived', '==', false),
+            orderBy('createdAt', 'asc')
+          );
+        } else {
+          jobsQ = query(
+            collection(db, 'jobs'),
+            where('projectId', '==', projectId),
+            where('assignedTo', 'array-contains', userEmail),
+            where('archived', '==', false),
+            orderBy('createdAt', 'asc')
+          );
+        }
+
+        const unsubTasks = onSnapshot(tasksQ, (snap) => {
+          if (isSubscribed) setTasks(snap.docs.map(d => ({ id: d.id, ...d.data() } as Task)));
+        });
+
+        const unsubJobs = onSnapshot(jobsQ, (snap) => {
+          if (isSubscribed) setJobs(snap.docs.map(d => ({ id: d.id, ...d.data() } as Job)));
+        });
+
+        return () => {
+          unsubTasks();
+          unsubJobs();
+        };
       } finally {
         if (isSubscribed) setLoading(false);
       }
@@ -183,9 +251,19 @@ export function useGlobalStats() {
         if (response.ok) {
           const data = await response.json();
           if (isSubscribed) setStats(data);
+        } else {
+          throw new Error('API failed');
         }
       } catch (err) {
-        console.error("Stats API error:", err);
+        console.error("Stats API error, falling back to basic calculation:", err);
+        // Simple local stats as fallback
+        const projectsCount = projects.length;
+        setStats(prev => ({
+          ...prev,
+          activeProjects: projectsCount,
+          totalTasks: 0, // Hard to calculate without all data
+          totalMembers: members.length
+        }));
       }
     }
 
@@ -230,15 +308,57 @@ export function useRecentActivity() {
     };
   }, [role]);
 
+  // Client Side Fallback for Activity
+  useEffect(() => {
+    if (activity.length > 0 || role === null) return;
+    
+    let q;
+    const userEmail = auth.currentUser?.email?.toLowerCase();
+    
+    if (['Global Admin', 'Admin', 'Manager'].includes(role)) {
+      q = query(
+        collection(db, 'jobs'),
+        where('archived', '==', false),
+        orderBy('createdAt', 'desc'),
+        limit(5)
+      );
+    } else {
+      q = query(
+        collection(db, 'jobs'),
+        where('assignedTo', 'array-contains', userEmail),
+        where('archived', '==', false),
+        orderBy('createdAt', 'desc'),
+        limit(5)
+      );
+    }
+
+    const unsub = onSnapshot(q, (snap) => {
+      setActivity(snap.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          label: data.title,
+          desc: `Status updated to ${data.status}`,
+          color: data.status === 'Completed' ? 'bg-emerald-500' : 'bg-cyan-500',
+          projectId: data.projectId,
+          taskId: data.taskId
+        };
+      }));
+    }, (err) => console.error("Client Activity Fallback Error:", err));
+
+    return () => unsub();
+  }, [role, activity.length]);
+
   return activity;
 }
 
 export async function createProject(name: string) {
   try {
+    const userEmail = auth.currentUser?.email?.toLowerCase();
     await addDoc(collection(db, 'projects'), {
       name,
       ownerId: auth.currentUser?.uid || 'anonymous',
-      members: [auth.currentUser?.email || 'public'],
+      members: [userEmail || 'public'],
       createdAt: serverTimestamp(),
       archived: false
     });
@@ -249,7 +369,11 @@ export async function createProject(name: string) {
 
 export async function updateProject(id: string, data: Partial<Project>) {
   try {
-    await updateDoc(doc(db, 'projects', id), data);
+    const finalData = { ...data };
+    if (data.members) {
+      finalData.members = data.members.map(m => m.toLowerCase());
+    }
+    await updateDoc(doc(db, 'projects', id), finalData);
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, `projects/${id}`);
   }
@@ -339,8 +463,12 @@ export async function restoreTask(id: string) {
 
 export async function addJob(job: Omit<Job, 'id' | 'createdAt' | 'archived'>) {
   try {
-    await addDoc(collection(db, 'jobs'), {
+    const normalizedJob = {
       ...job,
+      assignedTo: job.assignedTo?.map(e => e.toLowerCase()) || []
+    };
+    await addDoc(collection(db, 'jobs'), {
+      ...normalizedJob,
       createdAt: serverTimestamp(),
       archived: false
     });
@@ -351,7 +479,11 @@ export async function addJob(job: Omit<Job, 'id' | 'createdAt' | 'archived'>) {
 
 export async function updateJob(id: string, data: Partial<Job>) {
   try {
-    await updateDoc(doc(db, 'jobs', id), data);
+    const finalData = { ...data };
+    if (data.assignedTo) {
+      finalData.assignedTo = data.assignedTo.map(e => e.toLowerCase());
+    }
+    await updateDoc(doc(db, 'jobs', id), finalData);
   } catch (err) {
     handleFirestoreError(err, OperationType.UPDATE, `jobs/${id}`);
   }
@@ -441,14 +573,64 @@ export async function syncUser() {
     });
 
     if (!response.ok) {
-      const errorData = await response.json();
-      throw new Error(errorData.error || 'Failed to sync user via API');
+      throw new Error('API failed');
     }
 
     const result = await response.json();
     console.log("User synced successfully via function:", result.status);
   } catch (err) {
-    console.error("Failed to sync user via function:", err);
+    console.error("Failed to sync user via function, falling back to client SDK sync:", err);
+    
+    // Client SDK Sync
+    try {
+      const { uid, email, displayName } = auth.currentUser;
+      if (!email) return;
+
+      const memberRef = doc(db, 'members', uid);
+      const docSnap = await getDoc(memberRef);
+
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        if (!data.uid || data.email !== email.toLowerCase()) {
+          await updateDoc(memberRef, { uid, email: email.toLowerCase() });
+        }
+      } else {
+        const adminEmails = ['zahidul@greenbyteai.com'];
+        const isGlobalAdmin = adminEmails.some(ae => ae.toLowerCase() === email.toLowerCase());
+        
+        const memberData = {
+          name: displayName || email.split('@')[0],
+          email: email.toLowerCase(),
+          role: isGlobalAdmin ? 'Global Admin' : 'Worker',
+          createdAt: serverTimestamp(),
+          uid: uid
+        };
+        
+        await setDoc(memberRef, memberData, { merge: true });
+        console.log("User synced via Client SDK successfully");
+      }
+
+      // Always ensure other admin exists if current user is admin
+      const adminEmails = ['zahidul@greenbyteai.com'];
+      if (adminEmails.some(ae => ae.toLowerCase() === email.toLowerCase())) {
+        const otherAdminEmail = adminEmails.find(e => e.toLowerCase() !== email.toLowerCase());
+        if (otherAdminEmail) {
+          const q = query(collection(db, 'members'), where('email', '==', otherAdminEmail.toLowerCase()));
+          const otherSnap = await getDocs(q).catch(() => null);
+          if (otherSnap && otherSnap.empty) {
+            await addDoc(collection(db, 'members'), {
+              name: otherAdminEmail.split('@')[0],
+              email: otherAdminEmail.toLowerCase(),
+              role: 'Global Admin',
+              createdAt: serverTimestamp(),
+              uid: ''
+            }).catch(e => console.error("Failed to seed other admin:", e));
+          }
+        }
+      }
+    } catch (clientErr) {
+      console.error("Client SDK sync error:", clientErr);
+    }
   }
 }
 
@@ -509,18 +691,46 @@ export function useMembers() {
         });
         if (response.ok) {
           const data = await response.json();
-          // Deduplicate by email (case-insensitive)
           const uniqueMembers = data.reduce((acc: any[], current: any) => {
             const x = acc.find(item => item.email?.toLowerCase() === current.email?.toLowerCase());
             if (!x) return acc.concat([current]);
             return acc;
           }, []);
-          if (isSubscribed) setMembers(uniqueMembers);
+          if (isSubscribed) {
+            setMembers(uniqueMembers);
+            setLoading(false);
+          }
+          return;
         }
+        throw new Error('API failed');
       } catch (err) {
-        console.error("Members API Error:", err);
-      } finally {
-        if (isSubscribed) setLoading(false);
+        console.error("Members API Error, falling back to client SDK:", err);
+        
+        // Fallback to client SDK
+        const q = query(
+          collection(db, 'members'),
+          orderBy('createdAt', 'desc')
+        );
+
+        const unsubscribe = onSnapshot(q, (snapshot) => {
+          const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Member));
+          // Deduplicate by email
+          const uniqueMembers = data.reduce((acc: any[], current: any) => {
+            const x = acc.find(item => item.email?.toLowerCase() === current.email?.toLowerCase());
+            if (!x) return acc.concat([current]);
+            return acc;
+          }, []);
+          
+          if (isSubscribed) {
+            setMembers(uniqueMembers);
+            setLoading(false);
+          }
+        }, (clientErr) => {
+          console.error("Members client fallback error:", clientErr);
+          if (isSubscribed) setLoading(false);
+        });
+        
+        return () => unsubscribe();
       }
     }
 
@@ -557,7 +767,7 @@ export async function addMember(member: Omit<Member, 'id' | 'createdAt'> & { pas
 
     // 2. Add to Firestore
     const finalMember = { ...memberData };
-    const adminEmails = ['zahidul@greenbyteai.com', 'zahidulhasan23@gmail.com'];
+    const adminEmails = ['zahidul@greenbyteai.com'];
     if (adminEmails.includes(memberData.email)) {
       finalMember.role = 'Global Admin';
     }
@@ -581,7 +791,7 @@ export async function addMember(member: Omit<Member, 'id' | 'createdAt'> & { pas
 export async function updateMember(id: string, data: Partial<Member>) {
   try {
     const finalData = { ...data };
-    const adminEmails = ['zahidul@greenbyteai.com', 'zahidulhasan23@gmail.com'];
+    const adminEmails = ['zahidul@greenbyteai.com'];
     if (adminEmails.includes(data.email || '')) {
       finalData.role = 'Global Admin';
     }

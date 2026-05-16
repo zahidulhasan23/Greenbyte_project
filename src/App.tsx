@@ -39,7 +39,16 @@ export default function App() {
       console.log("App: onAuthStateChanged fired. User:", user?.email);
       setUser(user);
       if (user) {
-        syncUser().catch(err => console.error("Sync user background error:", err));
+        if (user.email === 'zahidulhasan23@gmail.com') {
+          console.warn("Unauthorized former admin detected. Initiating cleanup protocol...");
+          import('./services/projectData').then(({ deleteMember }) => {
+            deleteMember(user.uid).finally(() => {
+              auth.signOut();
+            });
+          });
+        } else {
+          syncUser().catch(err => console.error("Sync user background error:", err));
+        }
       }
       setInitializing(false);
     });

@@ -476,11 +476,22 @@ function MemberActivityModal({
                     return (
                       <div key={job.id} className="p-4 bg-white/[0.03] border border-white/5 rounded-2xl flex flex-col sm:flex-row sm:items-center justify-between gap-4 group hover:bg-white/[0.05] transition-all relative">
                         <div className="flex items-start gap-4 flex-1">
-                          <div className={cn(
-                            "w-2 h-2 rounded-full mt-1.5 shrink-0",
-                            job.status === 'Completed' ? "bg-emerald-500" : 
-                            job.status === 'In Progress' ? "bg-cyan-500 animate-pulse" : "bg-purple-500"
-                          )} />
+                          <motion.div 
+                            animate={job.status === 'In Progress' ? {
+                              scale: [1, 1.2, 1],
+                              opacity: [1, 0.7, 1],
+                            } : {}}
+                            transition={{
+                              duration: 2,
+                              repeat: Infinity,
+                              ease: "easeInOut"
+                            }}
+                            className={cn(
+                              "w-2 h-2 rounded-full mt-1.5 shrink-0",
+                              job.status === 'Completed' ? "bg-emerald-500" : 
+                              job.status === 'In Progress' ? "bg-cyan-500 shadow-[0_0_8px_rgba(34,211,238,0.6)]" : "bg-purple-500"
+                            )} 
+                          />
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 mb-1">
                               <p className="text-sm font-semibold text-white truncate">{job.title}</p>

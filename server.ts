@@ -1,53 +1,94 @@
 import express from 'express';
 import path from 'path';
-import * as admin from 'firebase-admin';
-import { getFirestore } from 'firebase-admin/firestore';
+import admin from 'firebase-admin';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { getAuth } from 'firebase-admin/auth';
 import fs from 'fs';
 
 console.log('--- Server Starting ---');
 
-const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
-let firebaseConfig: any;
-
-try {
-  if (fs.existsSync(configPath)) {
-    firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
-    console.log('Loaded firebase config for:', firebaseConfig.projectId);
-  } else {
-    throw new Error('firebase-applet-config.json not found');
-  }
-} catch (err) {
-  console.error('CRITICAL: Failed to load firebase-applet-config.json', err);
-  process.exit(1);
-}
-
-// Initialize Firebase Admin
-try {
-  if (admin.apps.length === 0) {
-    admin.initializeApp({
-      projectId: firebaseConfig.projectId
-    });
-    console.log('Firebase Admin initialized');
-  }
-} catch (err) {
-  console.error('Firebase Admin init error:', err);
-}
-
 async function startServer() {
+  console.log('Server initialization function started');
   const app = express();
   app.use(express.json());
   const PORT = 3000;
 
-  // Target the specific database instance
-  const db = getFirestore(firebaseConfig.firestoreDatabaseId);
-  console.log('Firestore initialized for database:', firebaseConfig.firestoreDatabaseId);
+  const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
+  let firebaseConfig: any;
 
+  try {
+    if (fs.existsSync(configPath)) {
+      firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      console.log('Loaded firebase config for project:', firebaseConfig.projectId);
+    } else {
+      throw new Error('firebase-applet-config.json not found');
+    }
+  } catch (err) {
+    console.error('CRITICAL: Failed to load firebase-applet-config.json', err);
+    process.exit(1);
+  }
+
+  // Initialize Firebase Admin
+  let currentApp: admin.app.App;
+  try {
+    if (admin.apps.length > 0) {
+      await Promise.all(admin.apps.map(a => a?.delete().catch(() => {})));
+    }
+    
+    // Force the project ID from the config
+    currentApp = admin.initializeApp({
+      projectId: firebaseConfig.projectId
+    });
+    console.log('Admin App Initialized for Project:', currentApp.options.projectId);
+  } catch (err) {
+    console.error('Firebase Admin init error:', err);
+    currentApp = admin.app();
+  }
+
+  // Target the specific database instance
+  const databaseId = firebaseConfig.firestoreDatabaseId || '(default)';
+  const db = getFirestore(currentApp, databaseId);
+  const authAdmin = getAuth(currentApp);
+
+  // Fallback Auth for audience mismatch
+  const systemProject = 'ais-asia-southeast1-48b26cb9bc';
+  const systemApp = admin.initializeApp({ projectId: systemProject }, 'system');
+  const systemAuth = getAuth(systemApp);
+
+  console.log('Final Admin App Project:', currentApp.options.projectId, 'Database:', databaseId);
+  
   // API routes
-  app.get('/api/health', (req, res) => {
-    console.log('Health check requested');
+  app.get('/api/health', async (req, res) => {
+    let firestoreStatus = 'unknown';
+    let dbDetails: any = {};
+    try {
+      const testDoc = db.collection('_health').doc('check');
+      await testDoc.set({ lastCheck: FieldValue.serverTimestamp(), env: 'server' });
+      firestoreStatus = 'ok';
+      dbDetails.customDb = 'ok';
+    } catch (e: any) {
+      firestoreStatus = `error: ${e.message} (Code: ${e.code})`;
+      console.error('HEALTH CHECK FAILED on custom DB:', e);
+      dbDetails.customDb = e.message;
+      
+      try {
+        const defaultDb = getFirestore(currentApp); // Try default
+        await defaultDb.collection('_health').doc('check').set({ lastCheck: FieldValue.serverTimestamp(), db: 'default' });
+        firestoreStatus += ' | (default) DB works!';
+        dbDetails.defaultDb = 'ok';
+      } catch (e2: any) {
+        firestoreStatus += ` | (default) DB failed: ${e2.message}`;
+        dbDetails.defaultDb = e2.message;
+      }
+    }
+
     res.json({ 
       status: 'ok', 
-      databaseId: firebaseConfig.firestoreDatabaseId,
+      firestore: firestoreStatus,
+      dbDetails,
+      projectId: currentApp.options.projectId,
+      envProject: process.env.GOOGLE_CLOUD_PROJECT || 'not-set',
+      databaseId: databaseId,
       time: new Date().toISOString()
     });
   });
@@ -60,26 +101,42 @@ async function startServer() {
 
     const idToken = authHeader.split('Bearer ')[1];
     try {
-      const decodedToken = await admin.auth().verifyIdToken(idToken);
+      let decodedToken;
+      try {
+        decodedToken = await authAdmin.verifyIdToken(idToken);
+      } catch (e: any) {
+        console.warn('Primary verifyIdToken failed:', e.message);
+        try {
+          decodedToken = await systemAuth.verifyIdToken(idToken);
+          console.log('System auth fallback worked.');
+        } catch (e2: any) {
+          console.error('System auth fallback failed:', e2.message);
+          throw e; // throw original error
+        }
+      }
+      
       const uid = decodedToken.uid;
       const email = decodedToken.email;
+
+      console.log('Syncing user:', email, 'Project (Primary):', authAdmin.app.options.projectId);
 
       if (!email) {
         return res.status(400).json({ error: 'Email missing from token' });
       }
 
-      const adminEmails = ['zahidul@greenbyteai.com', 'zahidulhasan23@gmail.com'];
+      const adminEmails = ['zahidul@greenbyteai.com'];
       const memberRef = db.collection('members').doc(uid);
       const doc = await memberRef.get();
+      const normalizedEmail = email.toLowerCase();
 
       if (!doc.exists) {
         // Check for orphan by email
-        const orphanQuery = await db.collection('members').where('email', '==', email).limit(1).get();
+        const orphanQuery = await db.collection('members').where('email', '==', normalizedEmail).limit(1).get();
         let initialData: any = {
-          name: decodedToken.name || email.split('@')[0],
-          email: email,
-          role: adminEmails.includes(email) ? 'Global Admin' : 'Worker',
-          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          name: decodedToken.name || normalizedEmail.split('@')[0],
+          email: normalizedEmail,
+          role: adminEmails.includes(normalizedEmail) ? 'Global Admin' : 'Worker',
+          createdAt: FieldValue.serverTimestamp(),
           uid: uid
         };
 
@@ -88,7 +145,7 @@ async function startServer() {
           initialData = {
             ...orphan.data(),
             uid: uid,
-            createdAt: admin.firestore.FieldValue.serverTimestamp()
+            createdAt: FieldValue.serverTimestamp()
           };
           if (orphan.id !== uid) {
             await orphan.ref.delete();
@@ -111,9 +168,14 @@ async function startServer() {
         }
         return res.json({ status: 'synced', role: data.role });
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error syncing user:', error);
-      return res.status(500).json({ error: 'Failed to sync user' });
+      return res.status(500).json({ 
+        error: 'Failed to sync user', 
+        details: error.message,
+        code: error.code,
+        project: authAdmin.app.options.projectId
+      });
     }
   });
 
@@ -125,7 +187,7 @@ async function startServer() {
 
     const idToken = authHeader.split('Bearer ')[1];
     try {
-      const decodedToken = await admin.auth().verifyIdToken(idToken);
+      const decodedToken = await authAdmin.verifyIdToken(idToken);
       const email = decodedToken.email;
 
       if (!email) {
@@ -161,7 +223,7 @@ async function startServer() {
     if (!projectId) return res.status(400).json({ error: 'projectId required' });
 
     try {
-      const decodedToken = await admin.auth().verifyIdToken(authHeader.split('Bearer ')[1]);
+      const decodedToken = await authAdmin.verifyIdToken(authHeader.split('Bearer ')[1]);
       // Admins/Managers can see all, Workers check project membership
       const projectDoc = await db.collection('projects').doc(projectId as string).get();
       if (!projectDoc.exists) return res.status(404).end();
@@ -194,7 +256,7 @@ async function startServer() {
     if (!projectId) return res.status(400).json({ error: 'projectId required' });
 
     try {
-      const decodedToken = await admin.auth().verifyIdToken(authHeader.split('Bearer ')[1]);
+      const decodedToken = await authAdmin.verifyIdToken(authHeader.split('Bearer ')[1]);
       const memberSnap = await db.collection('members').doc(decodedToken.uid).get();
       const role = memberSnap.exists ? memberSnap.data()?.role : 'Worker';
 
@@ -203,7 +265,7 @@ async function startServer() {
         .where('archived', '==', false);
 
       if (!['Global Admin', 'Admin', 'Manager'].includes(role)) {
-        jobsQuery = jobsQuery.where('assignedTo', 'array-contains', decodedToken.email);
+        jobsQuery = jobsQuery.where('assignedTo', 'array-contains', decodedToken.email?.toLowerCase());
       }
 
       const snapshot = await jobsQuery.orderBy('createdAt', 'asc').get();
@@ -218,7 +280,7 @@ async function startServer() {
     if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).end();
 
     try {
-      await admin.auth().verifyIdToken(authHeader.split('Bearer ')[1]);
+      await authAdmin.verifyIdToken(authHeader.split('Bearer ')[1]);
       const snapshot = await db.collection('members').orderBy('createdAt', 'desc').get();
       return res.json(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
     } catch (error) {
@@ -231,14 +293,14 @@ async function startServer() {
     if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).end();
 
     try {
-      const decodedToken = await admin.auth().verifyIdToken(authHeader.split('Bearer ')[1]);
+      const decodedToken = await authAdmin.verifyIdToken(authHeader.split('Bearer ')[1]);
       const email = decodedToken.email;
       const memberSnap = await db.collection('members').doc(decodedToken.uid).get();
       const role = memberSnap.exists ? memberSnap.data()?.role : 'Worker';
 
       let projectsQuery = db.collection('projects').where('archived', '==', false);
       if (!['Global Admin', 'Admin', 'Manager'].includes(role)) {
-        projectsQuery = projectsQuery.where('members', 'array-contains', email);
+        projectsQuery = projectsQuery.where('members', 'array-contains', email.toLowerCase());
       }
       
       const projectsSnap = await projectsQuery.get();
@@ -268,7 +330,7 @@ async function startServer() {
         .where('archived', '==', false);
       
       if (!['Global Admin', 'Admin', 'Manager'].includes(role)) {
-        jobsQuery = jobsQuery.where('assignedTo', 'array-contains', email);
+        jobsQuery = jobsQuery.where('assignedTo', 'array-contains', email.toLowerCase());
       }
 
       const jobsSnap = await jobsQuery.get();
@@ -296,14 +358,14 @@ async function startServer() {
     if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).end();
 
     try {
-      const decodedToken = await admin.auth().verifyIdToken(authHeader.split('Bearer ')[1]);
+      const decodedToken = await authAdmin.verifyIdToken(authHeader.split('Bearer ')[1]);
       const email = decodedToken.email;
       const memberSnap = await db.collection('members').doc(decodedToken.uid).get();
       const role = memberSnap.exists ? memberSnap.data()?.role : 'Worker';
 
       let projectsQuery = db.collection('projects').where('archived', '==', false);
       if (!['Global Admin', 'Admin', 'Manager'].includes(role)) {
-        projectsQuery = projectsQuery.where('members', 'array-contains', email);
+        projectsQuery = projectsQuery.where('members', 'array-contains', email.toLowerCase());
       }
       
       const projectsSnap = await projectsQuery.get();
@@ -316,7 +378,7 @@ async function startServer() {
         .where('archived', '==', false);
       
       if (!['Global Admin', 'Admin', 'Manager'].includes(role)) {
-        jobsQuery = jobsQuery.where('assignedTo', 'array-contains', email);
+        jobsQuery = jobsQuery.where('assignedTo', 'array-contains', email.toLowerCase());
       }
 
       const snapshot = await jobsQuery.orderBy('createdAt', 'desc').limit(5).get();
@@ -344,7 +406,7 @@ async function startServer() {
     if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).end();
 
     try {
-      const decodedToken = await admin.auth().verifyIdToken(authHeader.split('Bearer ')[1]);
+      const decodedToken = await authAdmin.verifyIdToken(authHeader.split('Bearer ')[1]);
       const memberSnap = await db.collection('members').doc(decodedToken.uid).get();
       const role = memberSnap.exists ? memberSnap.data()?.role : 'Worker';
 
@@ -374,24 +436,11 @@ async function startServer() {
     }
   });
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server listening on 0.0.0.0:${PORT} at ${new Date().toISOString()}`);
-    console.log(`Health check: http://localhost:${PORT}/api/health`);
-  });
-
-  // Error handler
-  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-    console.error('SERVER ERROR:', err);
-    res.status(500).json({ error: 'Internal server error', details: err.message });
-  });
-
   // Vite middleware for development
   if (process.env.NODE_ENV !== 'production') {
     console.log('Detected development mode. Loading Vite...');
     try {
-      console.log('Importing vite...');
       const { createServer } = await import('vite');
-      console.log('Vite imported. Creating server...');
       const vite = await createServer({
         server: { middlewareMode: true },
         appType: 'spa',
@@ -414,6 +463,24 @@ async function startServer() {
       console.error('CRITICAL: dist folder not found in production mode');
     }
   }
+
+  // Error handler (MUST be after all other routes and middlewares)
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('SERVER ERROR:', err);
+    if (!res.headersSent) {
+      res.status(500).json({ 
+        error: 'Internal server error', 
+        details: err.message,
+        project: currentApp.options.projectId,
+        database: databaseId
+      });
+    }
+  });
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server listening on 0.0.0.0:${PORT} at ${new Date().toISOString()}`);
+    console.log(`Health check: http://localhost:${PORT}/api/health`);
+  });
 }
 
 startServer().catch((err) => {

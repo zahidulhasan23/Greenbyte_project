@@ -187,6 +187,9 @@ export const DashboardLayout = ({
               <LogOut size={16} />
               Terminate Link
             </button>
+            <div className="pt-2 text-center">
+              <span className="text-[10px] text-slate-600 font-mono tracking-widest uppercase opacity-40">System Release v2.2.0</span>
+            </div>
           </div>
         </div>
       </aside>

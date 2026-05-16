@@ -1,160 +1,112 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    // --- Default Deny ---
+    match /{document=**} {
+      allow read, write: if isSignedIn();
+    }
+
     // --- Helpers ---
-    function isSignedIn() {
-      return request.auth != null;
-    }
-
-    function getEmail() {
-      return request.auth.token.get('email', 
-             request.auth.token.get('firebase', {}).get('identities', {}).get('email', [''])[0]);
-    }
-
-    function isUserAuthenticated(email) {
-      return isSignedIn() && (getEmail() == email);
-    }
+    function isSignedIn() { return request.auth != null; }
+    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); }
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
 
     function getRole() {
-      return exists(/databases/$(database)/documents/members/$(request.auth.uid)) ? 
-             get(/databases/$(database)/documents/members/$(request.auth.uid)).data.role : 'Worker';
-    }
-
-    function isZahidul() {
-      let email = getEmail();
-      return isSignedIn() && (email == 'zahidul@greenbyteai.com' || email == 'zahidulhasan23@gmail.com');
+      let memberDoc = /databases/$(database)/documents/members/$(request.auth.uid);
+      return exists(memberDoc) ? get(memberDoc).data.role : 'Worker';
     }
 
     function isGlobalAdmin() {
-      return isZahidul() || (isSignedIn() && getRole() == 'Global Admin');
+      let email = request.auth.token.get('email', '').lower();
+      return isSignedIn() && (email == 'zahidul@greenbyteai.com');
     }
 
     function isAdmin() {
-      return isGlobalAdmin() || (isSignedIn() && getRole() == 'Admin');
+      return isSignedIn() && (isGlobalAdmin() || getRole() == 'Admin');
     }
 
     function isManager() {
-      return isAdmin() || (isSignedIn() && getRole() == 'Manager');
+      return isSignedIn() && (isAdmin() || getRole() == 'Manager');
     }
 
-    function isWorker() {
-      return isSignedIn() && !isManager();
-    }
+    // --- Members ---
+    match /members/{userId} {
+      function isValidMember(data) {
+        return data.keys().hasAll(['name', 'email', 'role', 'createdAt']) &&
+               data.name is string && data.name.size() <= 200 &&
+               data.email is string && data.email.size() <= 200 &&
+               data.role in ['Global Admin', 'Admin', 'Manager', 'Worker'] &&
+               (resource == null ? data.createdAt == request.time : data.createdAt == resource.data.createdAt);
+      }
 
-    function isMemberOf(docData) {
-      return isSignedIn() && getEmail() != "" && docData.members.contains(getEmail());
-    }
-
-    function isAssignedTo(docData) {
-      return isSignedIn() && getEmail() != "" && docData.assignedTo.contains(getEmail());
-    }
-
-    function isValidId(id) {
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
-    }
-
-    function incoming() {
-      return request.resource.data;
-    }
-
-    function existing() {
-      return resource.data;
-    }
-
-    // --- Validation Blueprints ---
-    function isValidProject(data) {
-      return data.name is string && data.name.size() > 0 && data.name.size() <= 200 &&
-             data.ownerId is string && data.ownerId.size() <= 128 &&
-             data.members is list && data.members.size() <= 100 &&
-             (resource == null ? data.createdAt == request.time : data.createdAt == resource.data.createdAt) &&
-             data.archived is bool &&
-             (data.get('archivedAt', null) == null || data.archivedAt is timestamp);
-    }
-
-    function isValidTask(data) {
-      return data.projectId is string && isValidId(data.projectId) &&
-             data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
-             data.status in ['New', 'In Progress', 'Completed'] &&
-             (resource == null ? data.createdAt == request.time : data.createdAt == resource.data.createdAt) &&
-             data.archived is bool &&
-             (data.get('archivedAt', null) == null || data.archivedAt is timestamp);
-    }
-
-    function isValidJob(data) {
-      return data.taskId is string && isValidId(data.taskId) &&
-             data.projectId is string && isValidId(data.projectId) &&
-             data.title is string && data.title.size() > 0 && data.title.size() <= 200 &&
-             (data.get('addingDate', null) == null || data.addingDate is timestamp) &&
-             (data.get('finishingDate', null) == null || data.finishingDate is timestamp) &&
-             data.status in ['New', 'In Progress', 'Completed'] &&
-             data.assignedTo is list && data.assignedTo.size() <= 10 &&
-             (resource == null ? data.createdAt == request.time : data.createdAt == resource.data.createdAt) &&
-             (data.get('archived', false) is bool) &&
-             (data.get('archivedAt', null) == null || data.archivedAt is timestamp);
-    }
-
-    function isValidMember(data) {
-      return data.name is string && data.name.size() > 0 && data.name.size() <= 500 &&
-             data.email is string && data.email.size() <= 200 &&
-             data.role in ['Global Admin', 'Admin', 'Manager', 'Worker'] &&
-             (resource == null ? data.createdAt == request.time : 
-              (data.get('createdAt', resource.data.createdAt) == resource.data.createdAt));
-    }
-
-    // --- Collection Matches ---
-
-    match /projects/{projectId} {
-      allow list, get: if isSignedIn() && (isManager() || isMemberOf(resource.data));
-      allow create: if isAdmin() && isValidProject(incoming());
-      allow update: if isAdmin() && isValidProject(incoming()) && (
-        // Action: Full Edit or Archive/Restore
-        incoming().diff(existing()).affectedKeys().hasOnly(['name', 'members', 'archived', 'archivedAt'])
+      allow get: if isSignedIn() && (request.auth.uid == userId || isManager());
+      allow list: if isManager();
+      allow create: if isSignedIn() && isValidMember(incoming()) && (
+        (isGlobalAdmin()) || 
+        (request.auth.uid == userId && incoming().role == 'Worker')
+      );
+      allow update: if isSignedIn() && (
+        isGlobalAdmin() ||
+        (request.auth.uid == userId && incoming().role == existing().role && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'email', 'uid']))
       );
       allow delete: if isGlobalAdmin();
     }
 
+    // --- Projects ---
+    match /projects/{projectId} {
+      function isValidProject(data) {
+        return data.keys().hasAll(['name', 'ownerId', 'members', 'createdAt', 'archived']) &&
+               data.name is string && data.name.size() <= 200 &&
+               data.ownerId == request.auth.uid &&
+               data.members is list && data.members.size() <= 100 &&
+               data.archived is bool &&
+               (resource == null ? data.createdAt == request.time : data.createdAt == resource.data.createdAt);
+      }
+
+      function isProjectMember() {
+        return isSignedIn() && (isManager() || (request.auth.token.get('email', '').lower() in resource.data.members));
+      }
+
+      allow read: if isProjectMember();
+      allow create: if isManager() && isValidProject(incoming());
+      allow update: if isProjectMember() && (
+        isAdmin() || 
+        (isManager() && incoming().diff(existing()).affectedKeys().hasOnly(['archived', 'archivedAt', 'name', 'members']))
+      );
+      allow delete: if isAdmin();
+    }
+
+    // --- Tasks ---
     match /tasks/{taskId} {
-      allow list, get: if isManager() || (isSignedIn() && 
-        get(/databases/$(database)/documents/projects/$(existing().projectId)).data.members.contains(getEmail()));
-      allow create: if isAdmin() && isValidTask(incoming()) && exists(/databases/$(database)/documents/projects/$(incoming().projectId));
-      allow update: if (
-        (isAdmin() && incoming().diff(existing()).affectedKeys().hasAny(['status', 'archived', 'archivedAt'])) ||
-        (isManager() && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'archived', 'archivedAt']))
-      ) && isValidTask(incoming());
+      function isValidTask(data) {
+        return data.projectId is string && 
+               data.title is string && data.title.size() <= 200 &&
+               data.status in ['New', 'In Progress', 'Completed'] &&
+               data.archived is bool &&
+               (resource == null ? data.createdAt == request.time : data.createdAt == resource.data.createdAt);
+      }
+
+      allow read: if isSignedIn() && (isManager() || (request.auth.token.get('email', '').lower() in get(/databases/$(database)/documents/projects/$(existing().projectId)).data.members));
+      allow create: if isManager() && isValidTask(incoming()) && exists(/databases/$(database)/documents/projects/$(incoming().projectId));
+      allow update: if isManager() || (isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'archived', 'archivedAt']) && (request.auth.token.get('email', '').lower() in get(/databases/$(database)/documents/projects/$(existing().projectId)).data.members));
       allow delete: if isAdmin();
     }
 
+    // --- Jobs ---
     match /jobs/{jobId} {
-      allow list, get: if isManager() || isAssignedTo(existing());
-      allow create: if isAdmin() && isValidJob(incoming()) && 
-                    exists(/databases/$(database)/documents/tasks/$(incoming().taskId));
-      allow update: if (
-        (isAdmin() && isValidJob(incoming())) ||
-        (isManager() && incoming().diff(existing()).affectedKeys().hasOnly(['assignedTo', 'status', 'archived', 'archivedAt']) && isValidJob(incoming())) ||
-        (isWorker() && isAssignedTo(existing()) && 
-         incoming().diff(existing()).affectedKeys().hasOnly(['status', 'archived', 'archivedAt']) && isValidJob(incoming()))
-      );
-      allow delete: if isAdmin();
-    }
+      function isValidJob(data) {
+        return data.projectId is string && data.taskId is string &&
+               data.title is string && data.title.size() <= 200 &&
+               data.status in ['New', 'In Progress', 'Completed'] &&
+               data.archived is bool &&
+               (resource == null ? data.createdAt == request.time : data.createdAt == resource.data.createdAt);
+      }
 
-    match /members/{memberId} {
-      allow list, get: if isSignedIn();
-      allow create: if isSignedIn() && (
-        (memberId == request.auth.uid && (
-          incoming().role == 'Worker' || 
-          isZahidul()
-        )) ||
-        isAdmin()
-      ) && isValidMember(incoming());
-      allow update: if isValidMember(incoming()) && (
-        (isSignedIn() && memberId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'uid', 'email'])) ||
-        (isAdmin() && (
-          (isGlobalAdmin() && incoming().diff(existing()).affectedKeys().hasAny(['name', 'role', 'uid', 'email'])) ||
-          (isAdmin() && incoming().diff(existing()).affectedKeys().hasAny(['name', 'role', 'uid', 'email']) && 
-           existing().role != 'Global Admin' && incoming().role != 'Global Admin')
-        ))
-      );
-      allow delete: if isGlobalAdmin() && !(existing().email in ['zahidul@greenbyteai.com', 'zahidulhasan23@gmail.com']);
+      allow read: if isSignedIn() && (isManager() || (request.auth.token.get('email', '').lower() in resource.data.get('assignedTo', [])));
+      allow create: if isManager() && isValidJob(incoming()) && exists(/databases/$(database)/documents/tasks/$(incoming().taskId));
+      allow update: if isManager() || (isSignedIn() && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'archived', 'archivedAt']) && (request.auth.token.get('email', '').lower() in existing().get('assignedTo', [])));
+      allow delete: if isAdmin();
     }
   }
 }

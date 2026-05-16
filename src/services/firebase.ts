@@ -17,7 +17,8 @@ export enum OperationType {
 }
 
 export const isGlobalAdmin = () => {
-  return auth.currentUser?.email === 'zahidul@greenbyteai.com' && auth.currentUser?.emailVerified;
+  const adminEmails = ['zahidul@greenbyteai.com'];
+  return auth.currentUser?.email && adminEmails.includes(auth.currentUser.email.toLowerCase());
 };
 
 export interface FirestoreErrorInfo {

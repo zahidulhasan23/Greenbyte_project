@@ -203,10 +203,22 @@ export default function Tasks({
               <GlassCard key={job.id} className="p-6 flex flex-col md:flex-row md:items-center justify-between gap-6 hover:bg-white/[0.04] group">
                 <div className="flex-1 space-y-2">
                   <div className="flex items-center gap-3">
-                    <div className={`w-2 h-2 rounded-full ${
-                      job.status === 'Completed' ? 'bg-emerald-500' : 
-                      job.status === 'In Progress' ? 'bg-cyan-500 animate-pulse' : 'bg-purple-500'
-                    }`} />
+                    <motion.div 
+                      animate={job.status === 'In Progress' ? {
+                        scale: [1, 1.2, 1],
+                        opacity: [1, 0.7, 1],
+                      } : {}}
+                      transition={{
+                        duration: 2,
+                        repeat: Infinity,
+                        ease: "easeInOut"
+                      }}
+                      className={cn(
+                        "w-2 h-2 rounded-full",
+                        job.status === 'Completed' ? 'bg-emerald-500' : 
+                        job.status === 'In Progress' ? 'bg-cyan-500 shadow-[0_0_10px_rgba(34,211,238,0.8)]' : 'bg-purple-500'
+                      )} 
+                    />
                     <h5 className="font-semibold text-lg text-white group-hover:text-cyan-100 transition-colors truncate max-w-[150px] sm:max-w-none" title={job.title}>{job.title}</h5>
                   </div>
                   <div className="flex flex-col gap-1">
