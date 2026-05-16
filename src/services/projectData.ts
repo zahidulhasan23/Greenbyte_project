@@ -118,46 +118,39 @@ export function useProjectHierarchy(projectId: string | null) {
       return;
     }
 
-    setLoading(true);
+    let isSubscribed = true;
+    
+    async function fetchData() {
+      try {
+        setLoading(true);
+        const idToken = await auth.currentUser?.getIdToken();
+        const headers = { 'Authorization': `Bearer ${idToken}` };
+        
+        const [tasksRes, jobsRes] = await Promise.all([
+          fetch(`/api/tasks?projectId=${projectId}`, { headers }),
+          fetch(`/api/jobs?projectId=${projectId}`, { headers })
+        ]);
 
-    const tasksQ = query(
-      collection(db, 'tasks'),
-      where('projectId', '==', projectId),
-      where('archived', '==', false),
-      orderBy('createdAt', 'asc')
-    );
-
-    let jobsQ;
-    if (role === 'Global Admin' || role === 'Admin' || role === 'Manager') {
-      jobsQ = query(
-        collection(db, 'jobs'),
-        where('projectId', '==', projectId),
-        where('archived', '==', false),
-        orderBy('createdAt', 'asc')
-      );
-    } else {
-      // Worker only sees jobs assigned to them
-      jobsQ = query(
-        collection(db, 'jobs'),
-        where('projectId', '==', projectId),
-        where('assignedTo', 'array-contains', auth.currentUser?.email),
-        where('archived', '==', false),
-        orderBy('createdAt', 'asc')
-      );
+        if (tasksRes.ok && jobsRes.ok) {
+          const [tasksData, jobsData] = await Promise.all([tasksRes.json(), jobsRes.json()]);
+          if (isSubscribed) {
+            setTasks(tasksData);
+            setJobs(jobsData);
+          }
+        }
+      } catch (err) {
+        console.error("Hierarchy API Error:", err);
+      } finally {
+        if (isSubscribed) setLoading(false);
+      }
     }
 
-    const unsubTasks = onSnapshot(tasksQ, (snapshot) => {
-      setTasks(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Task)));
-    });
-
-    const unsubJobs = onSnapshot(jobsQ, (snapshot) => {
-      setJobs(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Job)));
-      setLoading(false);
-    });
+    fetchData();
+    const interval = setInterval(fetchData, 30000);
 
     return () => {
-      unsubTasks();
-      unsubJobs();
+      isSubscribed = false;
+      clearInterval(interval);
     };
   }, [projectId, role]);
 
@@ -166,7 +159,7 @@ export function useProjectHierarchy(projectId: string | null) {
 
 export function useGlobalStats() {
   const { projects } = useProjects();
-  const { members } = useMembers();
+  const { members } = useMembers(); // Members hook already updated to use API
   const { role } = useCurrentUserRole();
   const [stats, setStats] = useState({
     activeProjects: 0,
@@ -179,121 +172,63 @@ export function useGlobalStats() {
 
   useEffect(() => {
     if (role === null) return;
-    const activeProjectsList = projects.filter(p => !p.archived);
     
-    if (activeProjectsList.length === 0) {
-      setStats(prev => ({ 
-        ...prev, 
-        activeProjects: 0, 
-        totalTasks: 0, 
-        completedJobs: 0, 
-        pipelineJobs: 0, 
-        successRate: 0,
-        totalMembers: members.length 
-      }));
-      return;
-    }
-
-    const unsubscribes: (() => void)[] = [];
-    let projectTaskCounts: Record<string, number> = {};
-    let projectJobCounts: Record<string, { total: number, completed: number }> = {};
-
-    activeProjectsList.forEach(project => {
-      const tasksQ = query(collection(db, 'tasks'), where('projectId', '==', project.id), where('archived', '==', false));
-      
-      let jobsQ;
-      if (role === 'Global Admin' || role === 'Admin' || role === 'Manager') {
-        jobsQ = query(collection(db, 'jobs'), where('projectId', '==', project.id), where('archived', '==', false));
-      } else {
-        jobsQ = query(
-          collection(db, 'jobs'), 
-          where('projectId', '==', project.id),
-          where('assignedTo', 'array-contains', auth.currentUser?.email),
-          where('archived', '==', false)
-        );
-      }
-
-      const unsubTasks = onSnapshot(tasksQ, (snapshot) => {
-        projectTaskCounts[project.id] = snapshot.docs
-          .filter(d => !d.data().archived && d.data().status !== 'Completed').length;
-        updateStats();
-      });
-
-      const unsubJobs = onSnapshot(jobsQ, (snapshot) => {
-        const jobsData = snapshot.docs.filter(d => {
-          // If task is archived, we might want to hide its jobs too
-          // But here we just count all jobs for active projects?
-          // Let's stick to jobs that are part of non-archived tasks.
-          // This is a bit complex without a task lookup.
-          // For now, let's just count all jobs for active projects.
-          return true;
+    let isSubscribed = true;
+    async function fetchStats() {
+      try {
+        const idToken = await auth.currentUser?.getIdToken();
+        const response = await fetch('/api/dashboard-stats', {
+          headers: { 'Authorization': `Bearer ${idToken}` }
         });
-        const completed = jobsData.filter(d => d.data().status === 'Completed').length;
-        projectJobCounts[project.id] = { total: jobsData.length, completed };
-        updateStats();
-      });
-
-      unsubscribes.push(unsubTasks, unsubJobs);
-    });
-
-    function updateStats() {
-      const activeTasks = Object.values(projectTaskCounts).reduce((a, b) => a + b, 0);
-      const totalJobs = Object.values(projectJobCounts).reduce((a, b) => a + b.total, 0);
-      const completedJobs = Object.values(projectJobCounts).reduce((a, b) => a + b.completed, 0);
-      const successRate = totalJobs > 0 ? Math.round((completedJobs / totalJobs) * 100) : 0;
-      
-      setStats({
-        activeProjects: activeProjectsList.length,
-        totalTasks: activeTasks,
-        completedJobs,
-        pipelineJobs: totalJobs - completedJobs,
-        totalMembers: members.length,
-        successRate
-      });
+        if (response.ok) {
+          const data = await response.json();
+          if (isSubscribed) setStats(data);
+        }
+      } catch (err) {
+        console.error("Stats API error:", err);
+      }
     }
 
-    return () => unsubscribes.forEach(unsub => unsub());
-  }, [projects, members, role]);
+    fetchStats();
+    const interval = setInterval(fetchStats, 60000); // 1 min refresh
+    return () => {
+      isSubscribed = false;
+      clearInterval(interval);
+    };
+  }, [role]);
 
   return stats;
 }
 
 export function useRecentActivity() {
-  const { projects } = useProjects();
   const [activity, setActivity] = useState<{ id: string, label: string, desc: string, color: string, projectId: string, taskId: string }[]>([]);
+  const { role } = useCurrentUserRole();
 
   useEffect(() => {
-    const activeProjects = projects.filter(p => !p.archived);
-    if (activeProjects.length === 0) {
-      setActivity([]);
-      return;
+    if (role === null) return;
+    let isSubscribed = true;
+    async function fetchActivity() {
+      try {
+        const idToken = await auth.currentUser?.getIdToken();
+        const response = await fetch('/api/recent-activity', {
+          headers: { 'Authorization': `Bearer ${idToken}` }
+        });
+        if (response.ok) {
+          const data = await response.json();
+          if (isSubscribed) setActivity(data);
+        }
+      } catch (err) {
+        console.error("Activity API error:", err);
+      }
     }
 
-    const q = query(
-      collection(db, 'jobs'),
-      where('projectId', 'in', activeProjects.map(p => p.id).slice(0, 10)), // Firestore 'in' limit is 10
-      where('archived', '==', false),
-      orderBy('createdAt', 'desc'),
-      limit(5)
-    );
-
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const recent = snapshot.docs.map(doc => {
-        const data = doc.data();
-        return {
-          id: doc.id,
-          label: data.title,
-          desc: `Status updated to ${data.status}`,
-          color: data.status === 'Completed' ? 'bg-emerald-500' : 'bg-cyan-500',
-          projectId: data.projectId,
-          taskId: data.taskId
-        };
-      });
-      setActivity(recent);
-    });
-
-    return () => unsubscribe();
-  }, [projects]);
+    fetchActivity();
+    const interval = setInterval(fetchActivity, 60000);
+    return () => {
+      isSubscribed = false;
+      clearInterval(interval);
+    };
+  }, [role]);
 
   return activity;
 }
@@ -524,51 +459,36 @@ export function useTrashedItems() {
 
   useEffect(() => {
     if (role === null) return;
-
     if (role !== 'Global Admin' && role !== 'Admin' && role !== 'Manager') {
       setItems([]);
       setLoading(false);
       return;
     }
 
-    const unsubscribes: (() => void)[] = [];
-
-    const projectsQ = query(collection(db, 'projects'), where('archived', '==', true));
-    const tasksQ = query(collection(db, 'tasks'), where('archived', '==', true));
-    const jobsQ = query(collection(db, 'jobs'), where('archived', '==', true));
-
-    let projects: any[] = [];
-    let tasks: any[] = [];
-    let jobs: any[] = [];
-
-    const unsubProjects = onSnapshot(projectsQ, (snap) => {
-      projects = snap.docs.map(doc => ({ id: doc.id, type: 'project', title: doc.data().name, archivedAt: doc.data().archivedAt }));
-      updateItems();
-    });
-
-    const unsubTasks = onSnapshot(tasksQ, (snap) => {
-      tasks = snap.docs.map(doc => ({ id: doc.id, type: 'task', title: doc.data().title, archivedAt: doc.data().archivedAt }));
-      updateItems();
-    });
-
-    const unsubJobs = onSnapshot(jobsQ, (snap) => {
-      jobs = snap.docs.map(doc => ({ id: doc.id, type: 'job', title: doc.data().title, archivedAt: doc.data().archivedAt }));
-      updateItems();
-    });
-
-    unsubscribes.push(unsubProjects, unsubTasks, unsubJobs);
-
-    function updateItems() {
-      const all = [...projects, ...tasks, ...jobs].sort((a, b) => {
-        const timeA = a.archivedAt?.toMillis() || 0;
-        const timeB = b.archivedAt?.toMillis() || 0;
-        return timeB - timeA;
-      });
-      setItems(all);
-      setLoading(false);
+    let isSubscribed = true;
+    async function fetchTrashed() {
+      try {
+        const idToken = await auth.currentUser?.getIdToken();
+        const response = await fetch('/api/trashed-items', {
+          headers: { 'Authorization': `Bearer ${idToken}` }
+        });
+        if (response.ok) {
+          const data = await response.json();
+          if (isSubscribed) setItems(data);
+        }
+      } catch (err) {
+        console.error("Trashed items API error:", err);
+      } finally {
+        if (isSubscribed) setLoading(false);
+      }
     }
 
-    return () => unsubscribes.forEach(u => u());
+    fetchTrashed();
+    const interval = setInterval(fetchTrashed, 60000);
+    return () => {
+      isSubscribed = false;
+      clearInterval(interval);
+    };
   }, [role]);
 
   return { items, loading };
@@ -579,25 +499,37 @@ export function useMembers() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const q = query(collection(db, 'members'), orderBy('createdAt', 'desc'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const allMembers = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Member));
-      // Deduplicate by email (case-insensitive)
-      const uniqueMembers = allMembers.reduce((acc, current) => {
-        const x = acc.find(item => item.email?.toLowerCase() === current.email?.toLowerCase());
-        if (!x) {
-          return acc.concat([current]);
-        } else {
-          return acc;
+    let isSubscribed = true;
+    async function fetchMembers() {
+      try {
+        setLoading(true);
+        const idToken = await auth.currentUser?.getIdToken();
+        const response = await fetch('/api/members', {
+          headers: { 'Authorization': `Bearer ${idToken}` }
+        });
+        if (response.ok) {
+          const data = await response.json();
+          // Deduplicate by email (case-insensitive)
+          const uniqueMembers = data.reduce((acc: any[], current: any) => {
+            const x = acc.find(item => item.email?.toLowerCase() === current.email?.toLowerCase());
+            if (!x) return acc.concat([current]);
+            return acc;
+          }, []);
+          if (isSubscribed) setMembers(uniqueMembers);
         }
-      }, [] as Member[]);
-      
-      setMembers(uniqueMembers);
-      setLoading(false);
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'members');
-    });
-    return () => unsubscribe();
+      } catch (err) {
+        console.error("Members API Error:", err);
+      } finally {
+        if (isSubscribed) setLoading(false);
+      }
+    }
+
+    fetchMembers();
+    const interval = setInterval(fetchMembers, 60000);
+    return () => {
+      isSubscribed = false;
+      clearInterval(interval);
+    };
   }, []);
 
   return { members, loading };

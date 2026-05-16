@@ -1,9 +1,25 @@
 import express from 'express';
 import path from 'path';
 import * as admin from 'firebase-admin';
+import { getFirestore } from 'firebase-admin/firestore';
 import fs from 'fs';
 
-const firebaseConfig = JSON.parse(fs.readFileSync(path.join(process.cwd(), 'firebase-applet-config.json'), 'utf8'));
+console.log('--- Server Starting ---');
+
+const configPath = path.join(process.cwd(), 'firebase-applet-config.json');
+let firebaseConfig: any;
+
+try {
+  if (fs.existsSync(configPath)) {
+    firebaseConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    console.log('Loaded firebase config for:', firebaseConfig.projectId);
+  } else {
+    throw new Error('firebase-applet-config.json not found');
+  }
+} catch (err) {
+  console.error('CRITICAL: Failed to load firebase-applet-config.json', err);
+  process.exit(1);
+}
 
 // Initialize Firebase Admin
 try {
@@ -11,7 +27,7 @@ try {
     admin.initializeApp({
       projectId: firebaseConfig.projectId
     });
-    console.log('Firebase Admin initialized for project:', firebaseConfig.projectId);
+    console.log('Firebase Admin initialized');
   }
 } catch (err) {
   console.error('Firebase Admin init error:', err);
@@ -23,7 +39,7 @@ async function startServer() {
   const PORT = 3000;
 
   // Target the specific database instance
-  const db = admin.firestore(firebaseConfig.firestoreDatabaseId);
+  const db = getFirestore(firebaseConfig.firestoreDatabaseId);
   console.log('Firestore initialized for database:', firebaseConfig.firestoreDatabaseId);
 
   // API routes
@@ -138,24 +154,266 @@ async function startServer() {
     }
   });
 
-  if (process.env.NODE_ENV !== 'production') {
-    const { createServer } = await import('vite');
-    const vite = await createServer({
-      server: { middlewareMode: true },
-      appType: 'spa',
-    });
-    app.use(vite.middlewares);
-  } else {
-    const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
-    app.get('*', (req, res) => {
-      res.sendFile(path.join(distPath, 'index.html'));
-    });
-  }
+  app.get('/api/tasks', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    const { projectId } = req.query;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).end();
+    if (!projectId) return res.status(400).json({ error: 'projectId required' });
+
+    try {
+      const decodedToken = await admin.auth().verifyIdToken(authHeader.split('Bearer ')[1]);
+      // Admins/Managers can see all, Workers check project membership
+      const projectDoc = await db.collection('projects').doc(projectId as string).get();
+      if (!projectDoc.exists) return res.status(404).end();
+      
+      const projectData = projectDoc.data()!;
+      const memberSnap = await db.collection('members').doc(decodedToken.uid).get();
+      const role = memberSnap.exists ? memberSnap.data()?.role : 'Worker';
+      
+      const isAuthorized = ['Global Admin', 'Admin', 'Manager'].includes(role) || 
+                         (projectData.members && projectData.members.includes(decodedToken.email));
+
+      if (!isAuthorized) return res.status(403).end();
+
+      const snapshot = await db.collection('tasks')
+        .where('projectId', '==', projectId)
+        .where('archived', '==', false)
+        .orderBy('createdAt', 'asc')
+        .get();
+      
+      return res.json(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    } catch (error) {
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  app.get('/api/jobs', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    const { projectId } = req.query;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).end();
+    if (!projectId) return res.status(400).json({ error: 'projectId required' });
+
+    try {
+      const decodedToken = await admin.auth().verifyIdToken(authHeader.split('Bearer ')[1]);
+      const memberSnap = await db.collection('members').doc(decodedToken.uid).get();
+      const role = memberSnap.exists ? memberSnap.data()?.role : 'Worker';
+
+      let jobsQuery = db.collection('jobs')
+        .where('projectId', '==', projectId)
+        .where('archived', '==', false);
+
+      if (!['Global Admin', 'Admin', 'Manager'].includes(role)) {
+        jobsQuery = jobsQuery.where('assignedTo', 'array-contains', decodedToken.email);
+      }
+
+      const snapshot = await jobsQuery.orderBy('createdAt', 'asc').get();
+      return res.json(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    } catch (error) {
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  app.get('/api/members', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).end();
+
+    try {
+      await admin.auth().verifyIdToken(authHeader.split('Bearer ')[1]);
+      const snapshot = await db.collection('members').orderBy('createdAt', 'desc').get();
+      return res.json(snapshot.docs.map(d => ({ id: d.id, ...d.data() })));
+    } catch (error) {
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  app.get('/api/dashboard-stats', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).end();
+
+    try {
+      const decodedToken = await admin.auth().verifyIdToken(authHeader.split('Bearer ')[1]);
+      const email = decodedToken.email;
+      const memberSnap = await db.collection('members').doc(decodedToken.uid).get();
+      const role = memberSnap.exists ? memberSnap.data()?.role : 'Worker';
+
+      let projectsQuery = db.collection('projects').where('archived', '==', false);
+      if (!['Global Admin', 'Admin', 'Manager'].includes(role)) {
+        projectsQuery = projectsQuery.where('members', 'array-contains', email);
+      }
+      
+      const projectsSnap = await projectsQuery.get();
+      const projectIds = projectsSnap.docs.map(d => d.id);
+      
+      if (projectIds.length === 0) {
+        return res.json({
+          activeProjects: 0,
+          totalTasks: 0,
+          completedJobs: 0,
+          pipelineJobs: 0,
+          totalMembers: (await db.collection('members').count().get()).data().count,
+          successRate: 0
+        });
+      }
+
+      // Consolidate counts (Batching counts is better than retrieving all docs)
+      // Note: for simpler code we can just count
+      const tasksSnap = await db.collection('tasks')
+        .where('projectId', 'in', projectIds.slice(0, 30)) // Firestore limit for 'in'
+        .where('archived', '==', false)
+        .where('status', '!=', 'Completed')
+        .get();
+
+      let jobsQuery = db.collection('jobs')
+        .where('projectId', 'in', projectIds.slice(0, 30))
+        .where('archived', '==', false);
+      
+      if (!['Global Admin', 'Admin', 'Manager'].includes(role)) {
+        jobsQuery = jobsQuery.where('assignedTo', 'array-contains', email);
+      }
+
+      const jobsSnap = await jobsQuery.get();
+      const jobs = jobsSnap.docs.map(d => d.data());
+      const completedJobs = jobs.filter(j => j.status === 'Completed').length;
+      
+      const membersCount = (await db.collection('members').count().get()).data().count;
+
+      return res.json({
+        activeProjects: projectIds.length,
+        totalTasks: tasksSnap.size,
+        completedJobs: completedJobs,
+        pipelineJobs: jobs.length - completedJobs,
+        totalMembers: membersCount,
+        successRate: jobs.length > 0 ? Math.round((completedJobs / jobs.length) * 100) : 0
+      });
+    } catch (error) {
+      console.error("Dashboard stats error:", error);
+      return res.status(500).end();
+    }
+  });
+
+  app.get('/api/recent-activity', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).end();
+
+    try {
+      const decodedToken = await admin.auth().verifyIdToken(authHeader.split('Bearer ')[1]);
+      const email = decodedToken.email;
+      const memberSnap = await db.collection('members').doc(decodedToken.uid).get();
+      const role = memberSnap.exists ? memberSnap.data()?.role : 'Worker';
+
+      let projectsQuery = db.collection('projects').where('archived', '==', false);
+      if (!['Global Admin', 'Admin', 'Manager'].includes(role)) {
+        projectsQuery = projectsQuery.where('members', 'array-contains', email);
+      }
+      
+      const projectsSnap = await projectsQuery.get();
+      const projectIds = projectsSnap.docs.map(d => d.id);
+      
+      if (projectIds.length === 0) return res.json([]);
+
+      let jobsQuery = db.collection('jobs')
+        .where('projectId', 'in', projectIds.slice(0, 30))
+        .where('archived', '==', false);
+      
+      if (!['Global Admin', 'Admin', 'Manager'].includes(role)) {
+        jobsQuery = jobsQuery.where('assignedTo', 'array-contains', email);
+      }
+
+      const snapshot = await jobsQuery.orderBy('createdAt', 'desc').limit(5).get();
+      const activity = snapshot.docs.map(doc => {
+        const data = doc.data();
+        return {
+          id: doc.id,
+          label: data.title,
+          desc: `Status updated to ${data.status}`,
+          color: data.status === 'Completed' ? 'bg-emerald-500' : 'bg-cyan-500',
+          projectId: data.projectId,
+          taskId: data.taskId
+        };
+      });
+      
+      return res.json(activity);
+    } catch (error) {
+      console.error("Recent activity info error:", error);
+      return res.status(500).end();
+    }
+  });
+
+  app.get('/api/trashed-items', async (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader || !authHeader.startsWith('Bearer ')) return res.status(401).end();
+
+    try {
+      const decodedToken = await admin.auth().verifyIdToken(authHeader.split('Bearer ')[1]);
+      const memberSnap = await db.collection('members').doc(decodedToken.uid).get();
+      const role = memberSnap.exists ? memberSnap.data()?.role : 'Worker';
+
+      if (!['Global Admin', 'Admin', 'Manager'].includes(role)) {
+        return res.json([]);
+      }
+
+      const [pSnap, tSnap, jSnap] = await Promise.all([
+        db.collection('projects').where('archived', '==', true).get(),
+        db.collection('tasks').where('archived', '==', true).get(),
+        db.collection('jobs').where('archived', '==', true).get()
+      ]);
+
+      const projects = pSnap.docs.map(d => ({ id: d.id, type: 'project', title: d.data().name, archivedAt: d.data().archivedAt }));
+      const tasks = tSnap.docs.map(d => ({ id: d.id, type: 'task', title: d.data().title, archivedAt: d.data().archivedAt }));
+      const jobs = jSnap.docs.map(d => ({ id: d.id, type: 'job', title: d.data().title, archivedAt: d.data().archivedAt }));
+
+      const all = [...projects, ...tasks, ...jobs].sort((a: any, b: any) => {
+        const timeA = a.archivedAt?.toMillis() || 0;
+        const timeB = b.archivedAt?.toMillis() || 0;
+        return timeB - timeA;
+      });
+
+      return res.json(all);
+    } catch (error) {
+      return res.status(500).end();
+    }
+  });
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://0.0.0.0:${PORT}`);
+    console.log(`Server listening on 0.0.0.0:${PORT} at ${new Date().toISOString()}`);
+    console.log(`Health check: http://localhost:${PORT}/api/health`);
   });
+
+  // Error handler
+  app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+    console.error('SERVER ERROR:', err);
+    res.status(500).json({ error: 'Internal server error', details: err.message });
+  });
+
+  // Vite middleware for development
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('Detected development mode. Loading Vite...');
+    try {
+      console.log('Importing vite...');
+      const { createServer } = await import('vite');
+      console.log('Vite imported. Creating server...');
+      const vite = await createServer({
+        server: { middlewareMode: true },
+        appType: 'spa',
+      });
+      console.log('Vite server created. Registering middleware...');
+      app.use(vite.middlewares);
+      console.log('Vite middleware registered successfully');
+    } catch (viteError) {
+      console.error('CRITICAL VITE ERROR:', viteError);
+    }
+  } else {
+    console.log('Serving production build from /dist');
+    const distPath = path.join(process.cwd(), 'dist');
+    if (fs.existsSync(distPath)) {
+      app.use(express.static(distPath));
+      app.get('*', (req, res) => {
+        res.sendFile(path.join(distPath, 'index.html'));
+      });
+    } else {
+      console.error('CRITICAL: dist folder not found in production mode');
+    }
+  }
 }
 
 startServer().catch((err) => {
