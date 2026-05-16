@@ -18,8 +18,8 @@ import { NavigationProvider } from './context/NavigationContext';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth } from './services/firebase';
 import { syncUser } from './services/projectData';
-import { onAuthStateChanged, signInWithEmailAndPassword } from 'firebase/auth';
-import { Mail, Lock, AlertCircle } from 'lucide-react';
+import { onAuthStateChanged, signInWithEmailAndPassword, signInWithPopup, GoogleAuthProvider } from 'firebase/auth';
+import { Mail, Lock, AlertCircle, Chrome } from 'lucide-react';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('overview');
@@ -39,16 +39,7 @@ export default function App() {
       console.log("App: onAuthStateChanged fired. User:", user?.email);
       setUser(user);
       if (user) {
-        if (user.email === 'zahidulhasan23@gmail.com') {
-          console.warn("Unauthorized former admin detected. Initiating cleanup protocol...");
-          import('./services/projectData').then(({ deleteMember }) => {
-            deleteMember(user.uid).finally(() => {
-              auth.signOut();
-            });
-          });
-        } else {
-          syncUser().catch(err => console.error("Sync user background error:", err));
-        }
+        syncUser().catch(err => console.error("Sync user background error:", err));
       }
       setInitializing(false);
     });
@@ -66,6 +57,20 @@ export default function App() {
     } catch (err: any) {
       console.error("Auth Error:", err);
       setError(err.message || "Failed to login. Check your credentials.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleAuth = async () => {
+    setError(null);
+    setLoading(true);
+    try {
+      const provider = new GoogleAuthProvider();
+      await signInWithPopup(auth, provider);
+    } catch (err: any) {
+      console.error("Google Auth Error:", err);
+      setError(err.message || "Google Authentication failed.");
     } finally {
       setLoading(false);
     }
@@ -157,6 +162,25 @@ export default function App() {
                 )}
                 Initialize Link
               </NeonButton>
+
+              <div className="relative my-6">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-white/5"></div>
+                </div>
+                <div className="relative flex justify-center text-[8px] uppercase tracking-widest">
+                  <span className="bg-background px-2 text-slate-500">Or use biometric neural-link</span>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={handleGoogleAuth}
+                disabled={loading}
+                className="w-full bg-white/5 hover:bg-white/10 border border-white/10 rounded-xl py-3 flex items-center justify-center gap-2 text-[10px] font-bold uppercase tracking-widest text-white transition-all hover:border-cyan-500/50"
+              >
+                <Chrome size={16} className="text-cyan-400" />
+                Auth with Google
+              </button>
             </form>
 
 

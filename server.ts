@@ -28,34 +28,27 @@ async function startServer() {
     process.exit(1);
   }
 
-  // Initialize Firebase Admin
+  // Initialize Firebase Admin correctly
   let currentApp: admin.app.App;
-  try {
-    if (admin.apps.length > 0) {
-      await Promise.all(admin.apps.map(a => a?.delete().catch(() => {})));
-    }
-    
-    // Force the project ID from the config
-    currentApp = admin.initializeApp({
-      projectId: firebaseConfig.projectId
-    });
-    console.log('Admin App Initialized for Project:', currentApp.options.projectId);
-  } catch (err) {
-    console.error('Firebase Admin init error:', err);
+  if (admin.apps.length > 0) {
     currentApp = admin.app();
+    console.log('Using pre-initialized Admin App:', currentApp.options.projectId);
+  } else {
+    // Attempt to use ambient project ID first, then fallback to config
+    const ambientProjectId = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCLOUD_PROJECT;
+    const targetProjectId = ambientProjectId || firebaseConfig.projectId;
+    
+    currentApp = admin.initializeApp({
+      projectId: targetProjectId,
+    });
+    console.log('Initialized default Admin App:', targetProjectId);
   }
 
-  // Target the specific database instance
   const databaseId = firebaseConfig.firestoreDatabaseId || '(default)';
   const db = getFirestore(currentApp, databaseId);
   const authAdmin = getAuth(currentApp);
 
-  // Fallback Auth for audience mismatch
-  const systemProject = 'ais-asia-southeast1-48b26cb9bc';
-  const systemApp = admin.initializeApp({ projectId: systemProject }, 'system');
-  const systemAuth = getAuth(systemApp);
-
-  console.log('Final Admin App Project:', currentApp.options.projectId, 'Database:', databaseId);
+  console.log('Firebase Admin initialized. Project:', currentApp.options.projectId, 'Database:', databaseId);
   
   // API routes
   app.get('/api/health', async (req, res) => {
@@ -70,16 +63,6 @@ async function startServer() {
       firestoreStatus = `error: ${e.message} (Code: ${e.code})`;
       console.error('HEALTH CHECK FAILED on custom DB:', e);
       dbDetails.customDb = e.message;
-      
-      try {
-        const defaultDb = getFirestore(currentApp); // Try default
-        await defaultDb.collection('_health').doc('check').set({ lastCheck: FieldValue.serverTimestamp(), db: 'default' });
-        firestoreStatus += ' | (default) DB works!';
-        dbDetails.defaultDb = 'ok';
-      } catch (e2: any) {
-        firestoreStatus += ` | (default) DB failed: ${e2.message}`;
-        dbDetails.defaultDb = e2.message;
-      }
     }
 
     res.json({ 
@@ -101,35 +84,34 @@ async function startServer() {
 
     const idToken = authHeader.split('Bearer ')[1];
     try {
-      let decodedToken;
-      try {
-        decodedToken = await authAdmin.verifyIdToken(idToken);
-      } catch (e: any) {
-        console.warn('Primary verifyIdToken failed:', e.message);
-        try {
-          decodedToken = await systemAuth.verifyIdToken(idToken);
-          console.log('System auth fallback worked.');
-        } catch (e2: any) {
-          console.error('System auth fallback failed:', e2.message);
-          throw e; // throw original error
-        }
-      }
-      
+      const decodedToken = await authAdmin.verifyIdToken(idToken);
       const uid = decodedToken.uid;
       const email = decodedToken.email;
 
-      console.log('Syncing user:', email, 'Project (Primary):', authAdmin.app.options.projectId);
+      console.log('Syncing user:', email);
 
       if (!email) {
         return res.status(400).json({ error: 'Email missing from token' });
       }
 
       const adminEmails = ['zahidul@greenbyteai.com'];
-      const memberRef = db.collection('members').doc(uid);
-      const doc = await memberRef.get();
       const normalizedEmail = email.toLowerCase();
+      const memberRef = db.collection('members').doc(uid);
+      
+      let docData: any;
+      try {
+        const doc = await memberRef.get();
+        docData = doc.exists ? doc.data() : null;
+      } catch (err: any) {
+        console.error('Error fetching member doc during sync:', err.message);
+        // If we can't search for member, we might try to search by email as fallback
+        const orphanQuery = await db.collection('members').where('email', '==', normalizedEmail).limit(1).get();
+        if (!orphanQuery.empty) {
+          docData = orphanQuery.docs[0].data();
+        }
+      }
 
-      if (!doc.exists) {
+      if (!docData) {
         // Check for orphan by email
         const orphanQuery = await db.collection('members').where('email', '==', normalizedEmail).limit(1).get();
         let initialData: any = {
@@ -155,18 +137,17 @@ async function startServer() {
         await memberRef.set(initialData);
         return res.json({ status: 'created', role: initialData.role });
       } else {
-        const data = doc.data()!;
         const updates: any = {};
-        if (decodedToken.name && data.name !== decodedToken.name) {
+        if (decodedToken.name && docData.name !== decodedToken.name) {
           updates.name = decodedToken.name;
         }
-        if (!data.uid) {
+        if (!docData.uid) {
           updates.uid = uid;
         }
         if (Object.keys(updates).length > 0) {
           await memberRef.update(updates);
         }
-        return res.json({ status: 'synced', role: data.role });
+        return res.json({ status: 'synced', role: docData.role });
       }
     } catch (error: any) {
       console.error('Error syncing user:', error);

@@ -188,7 +188,7 @@ export const DashboardLayout = ({
               Terminate Link
             </button>
             <div className="pt-2 text-center">
-              <span className="text-[10px] text-slate-600 font-mono tracking-widest uppercase opacity-40">System Release v2.1.0</span>
+              <span className="text-[10px] text-slate-600 font-mono tracking-widest uppercase opacity-40">System Release v2.3.0</span>
             </div>
           </div>
         </div>
