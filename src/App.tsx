@@ -17,7 +17,7 @@ import Trash from './components/trash/Trash';
 import { NavigationProvider } from './context/NavigationContext';
 import { motion, AnimatePresence } from 'motion/react';
 import { auth } from './services/firebase';
-import { syncGlobalAdmin } from './services/projectData';
+import { syncUser } from './services/projectData';
 import { onAuthStateChanged, signInWithEmailAndPassword } from 'firebase/auth';
 import { Mail, Lock, AlertCircle } from 'lucide-react';
 
@@ -34,10 +34,12 @@ export default function App() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
+    console.log("App: Setting up onAuthStateChanged");
     const unsubscribe = onAuthStateChanged(auth, (user) => {
+      console.log("App: onAuthStateChanged fired. User:", user?.email);
       setUser(user);
       if (user) {
-        syncGlobalAdmin();
+        syncUser().catch(err => console.error("Sync user background error:", err));
       }
       setInitializing(false);
     });

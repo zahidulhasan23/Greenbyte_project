@@ -1,22 +1,18 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // 0. Default Deny Catch-all
-    match /{document=**} {
-      allow read, write: if request.auth != null && (
-        request.auth.token.email == 'zahidul@greenbyteai.com' || 
-        request.auth.token.email == 'zahidulhasan23@gmail.com'
-      );
-      allow read, write: if false;
-    }
-
     // --- Helpers ---
     function isSignedIn() {
-      return request.auth != null && (
-        request.auth.token.email_verified == true || 
-        request.auth.token.email == 'zahidul@greenbyteai.com' || 
-        request.auth.token.email == 'zahidulhasan23@gmail.com'
-      );
+      return request.auth != null;
+    }
+
+    function getEmail() {
+      return request.auth.token.get('email', 
+             request.auth.token.get('firebase', {}).get('identities', {}).get('email', [''])[0]);
+    }
+
+    function isUserAuthenticated(email) {
+      return isSignedIn() && (getEmail() == email);
     }
 
     function getRole() {
@@ -24,24 +20,33 @@ service cloud.firestore {
              get(/databases/$(database)/documents/members/$(request.auth.uid)).data.role : 'Worker';
     }
 
+    function isZahidul() {
+      let email = getEmail();
+      return isSignedIn() && (email == 'zahidul@greenbyteai.com' || email == 'zahidulhasan23@gmail.com');
+    }
+
     function isGlobalAdmin() {
-      return isSignedIn() && (
-        request.auth.token.email == 'zahidul@greenbyteai.com' || 
-        request.auth.token.email == 'zahidulhasan23@gmail.com' ||
-        getRole() == 'Global Admin'
-      );
+      return isZahidul() || (isSignedIn() && getRole() == 'Global Admin');
     }
 
     function isAdmin() {
-      return isSignedIn() && (isGlobalAdmin() || getRole() == 'Admin');
+      return isGlobalAdmin() || (isSignedIn() && getRole() == 'Admin');
     }
 
     function isManager() {
-      return isSignedIn() && (isAdmin() || getRole() == 'Manager');
+      return isAdmin() || (isSignedIn() && getRole() == 'Manager');
     }
 
     function isWorker() {
-      return isSignedIn() && getRole() == 'Worker';
+      return isSignedIn() && !isManager();
+    }
+
+    function isMemberOf(docData) {
+      return isSignedIn() && getEmail() != "" && docData.members.contains(getEmail());
+    }
+
+    function isAssignedTo(docData) {
+      return isSignedIn() && getEmail() != "" && docData.assignedTo.contains(getEmail());
     }
 
     function isValidId(id) {
@@ -92,13 +97,14 @@ service cloud.firestore {
       return data.name is string && data.name.size() > 0 && data.name.size() <= 500 &&
              data.email is string && data.email.size() <= 200 &&
              data.role in ['Global Admin', 'Admin', 'Manager', 'Worker'] &&
-             (resource == null ? data.createdAt == request.time : data.createdAt == resource.data.createdAt);
+             (resource == null ? data.createdAt == request.time : 
+              (data.get('createdAt', resource.data.createdAt) == resource.data.createdAt));
     }
 
     // --- Collection Matches ---
 
     match /projects/{projectId} {
-      allow list, get: if isManager() || (isWorker() && existing().members.contains(request.auth.token.email));
+      allow list, get: if isSignedIn() && (isManager() || isMemberOf(resource.data));
       allow create: if isAdmin() && isValidProject(incoming());
       allow update: if isAdmin() && isValidProject(incoming()) && (
         // Action: Full Edit or Archive/Restore
@@ -108,8 +114,8 @@ service cloud.firestore {
     }
 
     match /tasks/{taskId} {
-      allow list, get: if isManager() || (isWorker() && 
-        get(/databases/$(database)/documents/projects/$(existing().projectId)).data.members.contains(request.auth.token.email));
+      allow list, get: if isManager() || (isSignedIn() && 
+        get(/databases/$(database)/documents/projects/$(existing().projectId)).data.members.contains(getEmail()));
       allow create: if isAdmin() && isValidTask(incoming()) && exists(/databases/$(database)/documents/projects/$(incoming().projectId));
       allow update: if (
         (isAdmin() && incoming().diff(existing()).affectedKeys().hasAny(['status', 'archived', 'archivedAt'])) ||
@@ -119,27 +125,34 @@ service cloud.firestore {
     }
 
     match /jobs/{jobId} {
-      allow list, get: if isManager() || (isWorker() && existing().assignedTo.contains(request.auth.token.email));
+      allow list, get: if isManager() || isAssignedTo(existing());
       allow create: if isAdmin() && isValidJob(incoming()) && 
                     exists(/databases/$(database)/documents/tasks/$(incoming().taskId));
       allow update: if (
         (isAdmin() && isValidJob(incoming())) ||
         (isManager() && incoming().diff(existing()).affectedKeys().hasOnly(['assignedTo', 'status', 'archived', 'archivedAt']) && isValidJob(incoming())) ||
-        (isWorker() && existing().assignedTo.contains(request.auth.token.email) && 
+        (isWorker() && isAssignedTo(existing()) && 
          incoming().diff(existing()).affectedKeys().hasOnly(['status', 'archived', 'archivedAt']) && isValidJob(incoming()))
       );
       allow delete: if isAdmin();
     }
 
     match /members/{memberId} {
-      allow list: if isManager();
-      allow get: if isManager() || (isSignedIn() && memberId == request.auth.uid);
-      allow create: if isAdmin() && isValidMember(incoming());
-      allow update: if isAdmin() && isValidMember(incoming()) && (
-        // Action: Role/Name update
-        (isGlobalAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role'])) ||
-        (isAdmin() && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'role']) && 
-         existing().role != 'Global Admin' && incoming().role != 'Global Admin')
+      allow list, get: if isSignedIn();
+      allow create: if isSignedIn() && (
+        (memberId == request.auth.uid && (
+          incoming().role == 'Worker' || 
+          isZahidul()
+        )) ||
+        isAdmin()
+      ) && isValidMember(incoming());
+      allow update: if isValidMember(incoming()) && (
+        (isSignedIn() && memberId == request.auth.uid && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'uid', 'email'])) ||
+        (isAdmin() && (
+          (isGlobalAdmin() && incoming().diff(existing()).affectedKeys().hasAny(['name', 'role', 'uid', 'email'])) ||
+          (isAdmin() && incoming().diff(existing()).affectedKeys().hasAny(['name', 'role', 'uid', 'email']) && 
+           existing().role != 'Global Admin' && incoming().role != 'Global Admin')
+        ))
       );
       allow delete: if isGlobalAdmin() && !(existing().email in ['zahidul@greenbyteai.com', 'zahidulhasan23@gmail.com']);
     }
